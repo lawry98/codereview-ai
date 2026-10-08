@@ -18,7 +18,7 @@ const UV_BUILDS_PROJECT_NOTE = "uv sync builds and installs the project itself, 
 
 /** Each pattern marks a requirement line that can make pip build a package from source. */
 const PIP_BUILD_HINTS: ReadonlyArray<readonly [label: string, pattern: RegExp]> = [
-  ["--editable", /^(?:-e\b|--editable\b)/],
+  ["--editable", /^(?:-e|--editable\b)/],
   ["--no-binary", /^--no-binary\b/],
   ["a nested -r/-c file", /^(?:-[rc]|--requirement\b|--constraint\b)/],
   ["a VCS URL", /(?:^|[\s@])(?:git|hg|svn|bzr)\+/],
@@ -152,14 +152,36 @@ function detectPython(files: ProjectFiles, info: ProjectInfo): void {
   }
 }
 
-/** Labels of the build-from-source hints in a requirements file. Backslash-continued lines are joined, as pip does. */
+/** Labels of the build-from-source hints in a requirements file. */
 function pipBuildHints(text: string): string[] {
   const found = new Set<string>();
-  for (const raw of text.replace(/\\\r?\n/g, "").split(/\r?\n/)) {
-    const line = raw.replace(/(?:^|\s)#.*$/, "").trim();
+  for (const logical of pipLogicalLines(text)) {
+    const line = logical.replace(/(?:^|\s)#.*$/, "").trim();
     for (const [label, pattern] of PIP_BUILD_HINTS) {
       if (pattern.test(line)) found.add(label);
     }
   }
   return [...found];
+}
+
+/**
+ * Logical lines as pip's join_lines builds them: a non-comment line ending in a backslash continues onto
+ * the next line, with every leading and trailing backslash stripped. A comment line is never continued,
+ * and one that follows a continuation is appended to it and ends it.
+ */
+function pipLogicalLines(text: string): string[] {
+  const logical: string[] = [];
+  let pending: string | null = null;
+  for (const physical of text.split(/\r?\n/)) {
+    const isComment = /^\s*#/.test(physical);
+    if (!isComment && physical.endsWith("\\")) {
+      pending = (pending ?? "") + physical.replace(/^\\+|\\+$/g, "");
+      continue;
+    }
+    if (pending === null) logical.push(physical);
+    else logical.push(pending + (isComment ? " " : "") + physical);
+    pending = null;
+  }
+  if (pending !== null) logical.push(pending);
+  return logical;
 }

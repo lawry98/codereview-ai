@@ -124,11 +124,37 @@ describe("detectProject — python", () => {
     ]);
   });
 
+  it("notes an attached -e argument, which pip also reads as editable", () => {
+    const info = project({ "requirements.txt": "-evendor/pkg\n" });
+    expect(info.notes).toEqual([
+      "requirements.txt can make pip build packages from source (--editable), so Python install scripts may run even in the scripts-off pass.",
+    ]);
+  });
+
   it("joins backslash-continued lines before looking for build options", () => {
     const info = project({ "requirements.txt": "--no-\\\nbinary :all:\n" });
     expect(info.notes).toEqual([
       "requirements.txt can make pip build packages from source (--no-binary), so Python install scripts may run even in the scripts-off pass.",
     ]);
+  });
+
+  it("does not continue a comment line, so a backslash in a comment leaves the next line live", () => {
+    const info = project({ "requirements.txt": "# x \\\n--no-binary :all:\n" });
+    expect(info.notes).toEqual([
+      "requirements.txt can make pip build packages from source (--no-binary), so Python install scripts may run even in the scripts-off pass.",
+    ]);
+  });
+
+  it("strips every trailing backslash before joining, as pip does", () => {
+    const info = project({ "requirements.txt": "--no-\\\\\nbinary :all:\n" });
+    expect(info.notes).toEqual([
+      "requirements.txt can make pip build packages from source (--no-binary), so Python install scripts may run even in the scripts-off pass.",
+    ]);
+  });
+
+  it("treats a comment line after a continuation as ending it", () => {
+    const info = project({ "requirements.txt": "--no-\\\n# c\nbinary :all:\n" });
+    expect(info.notes).toEqual([]);
   });
 
   it("adds no pip note for plain pinned requirements", () => {
