@@ -17,6 +17,12 @@ describe("composeTeam", () => {
     expect(ids(composeTeam({ signals: [], changedLines: 10 }))).toEqual(["correctness"]);
   });
 
+  it("seats only correctness for a 3-line tsconfig-only PR", () => {
+    const team = composeTeam({ signals: ["configuration"], changedLines: 3 });
+    expect(ids(team)).toEqual(["correctness"]);
+    expect(team.declined[0].reason).toMatch(/under 30 changed lines and changes no code/);
+  });
+
   it("seats the standing team plus tests for a 29-line PR that changes logic", () => {
     const team = composeTeam({ signals: ["untested-behaviour-change"], changedLines: 29 });
     expect(ids(team)).toEqual(["correctness", "design", "craft", "spec", "tests"]);
