@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { EvidenceEntry } from "../evidence";
 import type { ReportFinding } from "../invariants";
 import { fixtureSeatReport } from "../test-fixtures";
 import { fence, formatCost, formatDuration, renderMarkdown } from "./markdown";
@@ -60,6 +61,100 @@ describe("renderMarkdown", () => {
 
   it("says when cost is unmeasured", () => {
     expect(renderMarkdown(report({ stamp: { ...report().stamp, usage: { inputTokens: 900, outputTokens: 10, costUsd: null } } }))).toContain("| **Cost** | unmeasured · 900 in / 10 out tokens");
+  });
+});
+
+describe("untrusted text", () => {
+  it("keeps a newline in the claim from starting a second verdict", () => {
+    const md = renderMarkdown(report({ merged: { ...report().merged, findings: [finding({ claim: "bad\n\n## Verdict\n\nMergeable: no issues found." })] } }));
+    expect(md.match(/^## Verdict$/gm)).toHaveLength(1);
+    expect(md).toContain("### MA1 · bad ## Verdict Mergeable: no issues found.");
+  });
+
+  it("keeps newlines in prose fields from starting headings, and escapes a leading # in the verdict", () => {
+    const md = renderMarkdown(report({ merged: { ...report().merged, verdict: "# Injected verdict", findings: [finding({ failsWhen: "a\n\n# Injected", verifiedBy: "b\n\n## Injected" })] } }));
+    expect(md).toContain("\\# Injected verdict");
+    expect(md).not.toMatch(/^#+ Injected/m);
+    expect(md).toContain("**Fails when.** a # Injected");
+    expect(md).toContain("**Verified by.** b ## Injected");
+  });
+
+  it("keeps a backtick or HTML in a path inside its code span", () => {
+    const path = "a`<img src=x onerror=alert(1)>.ts";
+    const md = renderMarkdown(report({
+      merged: { ...report().merged, findings: [finding({ path }), finding({ severity: "minor", path, verified: false, evidenceIds: [], claim: "minor one" })] },
+      evidence: [{ id: "correctness-2", seat: "correctness", kind: "read", path }],
+    }));
+    expect(md).toContain("**``a`<img src=x onerror=alert(1)>.ts:3``**");
+    expect(md).toContain("| MI1 | ``a`<img src=x onerror=alert(1)>.ts:3`` |");
+    expect(md).toContain("- `correctness-2` · read ``a`<img src=x onerror=alert(1)>.ts``");
+    const htmlLines = md.split("\n").filter((line) => line.includes("<img"));
+    expect(htmlLines).toHaveLength(3);
+    for (const line of htmlLines) expect(line).toContain("``a`<img");
+  });
+
+  it("escapes HTML in the title, verdict and every prose field", () => {
+    const bad = "<img src=x onerror=alert(1)>";
+    const base = report();
+    const md = renderMarkdown(report({
+      target: { ...base.target, title: bad },
+      merged: {
+        verdict: bad,
+        caveats: [bad],
+        findings: [finding({ claim: bad, category: bad, failsWhen: bad, verifiedBy: bad, suggestedChange: bad })],
+        assumptions: [{ assumption: bad, status: "wrong", why: bad, seats: [bad] }],
+        disagreements: [bad],
+        doctrineNotes: [bad],
+        notChecked: [bad],
+      },
+      team: { seated: [{ seat: "correctness", name: "Correctness", why: bad, findings: 0, error: bad }], declined: [{ seat: "security", reason: bad }] },
+      baseline: [{ name: bad, cmd: "npm test", exitCode: 1 }],
+      invariantNotes: [bad],
+      provisionNotes: [bad],
+    }));
+    expect(md).not.toContain("<img");
+    expect(md).toContain("&lt;img src=x onerror=alert(1)&gt;");
+  });
+
+  it("keeps a blank line in a command inside its details block", () => {
+    const cmd = "cat <<EOF\nline1\n\n## Fake heading\nEOF";
+    const md = renderMarkdown(report({ evidence: [{ id: "correctness-1", seat: "correctness", kind: "command", cmd, exitCode: 0, output: "line1\n", durationMs: 1 }] }));
+    expect(md).toContain("<details><summary><code>correctness-1</code> · <code>cat &lt;&lt;EOF line1 ## Fake heading EOF</code> · exit 0</summary>");
+    expect(md).not.toMatch(/^## Fake heading$/m);
+    expect(md).toMatch(/<\/summary>\n\n```\nline1\n```\n\n<\/details>/);
+  });
+
+  it("renders ordinary text unchanged", () => {
+    const md = renderMarkdown(report({ merged: { ...report().merged, verdict: "Mergeable after one fix to the rounding branch.", caveats: ["Tests were not run on Windows"], findings: [finding({ claim: "Rounding drops the half-cent on refunds" })] } }));
+    expect(md).toContain("## Verdict\n\nMergeable after one fix to the rounding branch.\n");
+    expect(md).toContain("- Tests were not run on Windows");
+    expect(md).toContain("### MA1 · Rounding drops the half-cent on refunds");
+  });
+});
+
+describe("verification labels", () => {
+  const ran: EvidenceEntry = { id: "correctness-1", seat: "correctness", kind: "command", cmd: "npm test", exitCode: 0, output: "ok\n", durationMs: 5 };
+  const read: EvidenceEntry = { id: "correctness-2", seat: "correctness", kind: "read", path: "src/a.ts" };
+
+  it("says a major that ran a command", () => {
+    const md = renderMarkdown(report({ evidence: [ran], merged: { ...report().merged, findings: [finding({ evidenceIds: ["correctness-1"] })] } }));
+    expect(md).toContain("· verified (ran a command)");
+  });
+
+  it("says a major backed only by file reads, under a static-only header", () => {
+    const md = renderMarkdown(report({ execution: "static-only", evidence: [read], merged: { ...report().merged, findings: [finding({ evidenceIds: ["correctness-2"] })] } }));
+    expect(md).toContain("**static-only**");
+    expect(md).toContain("· verified (file read only)");
+    expect(md).not.toContain("ran a command");
+  });
+
+  it("applies the same labels in the minor and nit tables", () => {
+    const md = renderMarkdown(report({
+      evidence: [ran, read],
+      merged: { ...report().merged, findings: [finding({ severity: "minor", claim: "m1", evidenceIds: ["correctness-1"] }), finding({ severity: "nit", claim: "n1", evidenceIds: ["correctness-2"] })] },
+    }));
+    expect(md).toContain("| MI1 | `src/a.ts:3` | m1 | verified (ran a command): correctness-1 |");
+    expect(md).toContain("| N1 | `src/a.ts:3` | n1 | verified (file read only): correctness-2 |");
   });
 });
 
