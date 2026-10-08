@@ -36,8 +36,11 @@ export function renderMarkdown(r: ReviewReport): string {
   listSection(out, "Doctrine notes", r.merged.doctrineNotes);
   out.push("## What was not checked", "", ...(r.merged.notChecked.length > 0 ? r.merged.notChecked.map((n) => `- ${oneLine(n)}`) : ["Nothing reported."]), "");
 
-  out.push("## The team", "", "| Seat | Why it has a seat | Findings |", "|---|---|---|");
-  for (const s of r.team.seated) out.push(`| ${oneLine(s.name)} | ${oneLine(s.why)} | ${s.error ? `failed: ${oneLine(s.error)}` : s.findings} |`);
+  out.push("## The team", "", "| Seat | Why it has a seat | Findings | Steps | Evidence logged | Usage |", "|---|---|---|---|---|---|");
+  for (const s of r.team.seated) {
+    const usage = `${formatCost(s.usage.costUsd)} · ${formatTokens(s.usage.inputTokens)} in / ${formatTokens(s.usage.outputTokens)} out`;
+    out.push(`| ${oneLine(s.name)} | ${oneLine(s.why)} | ${s.error ? `failed: ${oneLine(s.error)}` : s.findings} | ${s.steps} | ${s.evidenceLogged} | ${usage} |`);
+  }
   out.push("");
   if (r.team.declined.length > 0) {
     out.push("### Seats considered and declined", "", "| Seat | Why not |", "|---|---|");

@@ -12,9 +12,11 @@ import type { GitHubClient } from "./github/client";
 import { parsePrUrl } from "./github/parse-pr-url";
 import { capSeatReport, enforceInvariants } from "./invariants";
 import type { ReviewReport } from "./report/types";
+import { ROSTER } from "./roster";
+import { REPO_DIR } from "./sandbox/policy";
 import { provision, type ProvisionResult } from "./sandbox/provision";
 import type { SandboxFactory } from "./sandbox/runner";
-import { computeSignals } from "./signals";
+import { computeSignals, type Signal } from "./signals";
 import type { PrTarget } from "./types";
 import { mapWithConcurrency } from "./util/concurrency";
 import { ENGINE_VERSION } from "./version";
@@ -53,7 +55,8 @@ export async function reviewPr(url: string, deps: ReviewDeps): Promise<ReviewOut
   const gate = gatePr(target.files, { maxChangedLines: limits.maxChangedLines });
   if (!gate.ok) return { kind: "rejected", reason: gate.reason, target };
 
-  let team = composeTeam({ signals: computeSignals(target.files.map((f) => f.path)), changedLines: gate.changedLines });
+  const signals = computeSignals(target.files.map((f) => f.path));
+  let team = composeTeam({ signals, changedLines: gate.changedLines });
 
   progress({ type: "stage", stage: "provision" });
   const env = await provision(target, deps.sandboxes);
@@ -104,7 +107,7 @@ export async function reviewPr(url: string, deps: ReviewDeps): Promise<ReviewOut
     });
     for (const run of runs) usage = addUsage(usage, run.usage);
 
-    const caveats = structuralCaveats(env, runs, target);
+    const caveats = structuralCaveats(env, runs, target, signals);
     progress({ type: "stage", stage: "merge" });
     let merged: Merged;
     try {
@@ -116,6 +119,8 @@ export async function reviewPr(url: string, deps: ReviewDeps): Promise<ReviewOut
       usage = { ...usage, costUsd: null };
     }
 
+    // Command output shows absolute sandbox paths and models copy them, so paths are made repo-relative before the existence check.
+    merged = { ...merged, findings: merged.findings.map((f) => ({ ...f, path: repoRelative(f.path) })) };
     const headFiles = new Set(env.headFiles);
     const removed = new Set(target.files.filter((f) => f.status === "removed").map((f) => f.path));
     const checked = enforceInvariants(merged, { evidence, fileExists: (p) => headFiles.has(p) || removed.has(p) });
@@ -150,6 +155,9 @@ export async function reviewPr(url: string, deps: ReviewDeps): Promise<ReviewOut
           name: r.seat.name,
           why: r.why,
           findings: checked.merged.findings.filter((f) => f.seats.includes(r.seat.id)).length,
+          steps: r.steps,
+          usage: r.usage,
+          evidenceLogged: evidence.all().filter((e) => e.seat === r.seat.id).length,
           ...(r.error ? { error: r.error } : {}),
         })),
         declined: team.declined,
@@ -171,6 +179,11 @@ export async function reviewPr(url: string, deps: ReviewDeps): Promise<ReviewOut
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+const repoRelative = (path: string) => (path.startsWith(`${REPO_DIR}/`) ? path.slice(REPO_DIR.length + 1) : path).replace(/^(\.\/)+/, "");
+
+/** SIGKILL after the per-command timeout, or a sandbox error: the check never finished. */
+const didNotFinish = (exitCode: number) => exitCode === 137 || exitCode === -1;
+
 const snapshotNote = (snapshotId: string, failure: string) => `Snapshot ${snapshotId} could not be deleted: ${failure}`;
 
 /** Resolves to why the delete failed, or undefined once it is gone. A snapshot that outlives its review is a leak, so the caller must surface a failure. */
@@ -184,17 +197,27 @@ async function deleteSnapshot(sandboxes: SandboxFactory, snapshotId: string): Pr
 }
 
 /** Gaps that belong in the first paragraph of the verdict, not in a footnote. */
-function structuralCaveats(env: ProvisionResult, runs: SeatRun[], target: PrTarget): string[] {
+function structuralCaveats(env: ProvisionResult, runs: SeatRun[], target: PrTarget, signals: Signal[]): string[] {
   const caveats: string[] = [];
   if (env.headSha !== target.headSha) {
     caveats.push(`The PR head moved after its metadata was fetched; this review covers ${env.headSha.slice(0, 12)}, not ${target.headSha.slice(0, 12)}.`);
   }
   if (env.execution === "static-only") caveats.push("Static-only review: dependencies could not be installed, so nothing in this PR was executed.");
   if (env.execution === "full" && env.baseline.length === 0) caveats.push("No typecheck, lint or test command was found, so only commands the reviewers ran verify the findings.");
-  for (const b of env.baseline) {
-    if (b.result.exitCode !== 0) caveats.push(`Baseline \`${b.check.name}\` fails at the PR head (exit ${b.result.exitCode}); check whether the PR or its base branch is responsible.`);
+  // The engine cannot tell why a check failed, so the caveat names the causes it cannot rule out instead of blaming the PR.
+  for (const { check, result } of env.baseline) {
+    if (result.exitCode === 0) continue;
+    caveats.push(
+      didNotFinish(result.exitCode)
+        ? `Baseline \`${check.name}\` timed out or was cut off at the PR head (exit ${result.exitCode}), so it neither passes nor fails this PR.`
+        : `Baseline \`${check.name}\` fails at the PR head (exit ${result.exitCode}). The sandbox has no network, so a test that needs it fails here; otherwise check whether the PR or its base is responsible.`,
+    );
   }
-  for (const r of runs) if (r.seat.caveat) caveats.push(r.seat.caveat);
+  // A seat's structural gap exists whenever its trigger fired, even if the team cap or the lead left the seat out.
+  for (const seat of ROSTER) {
+    if (!seat.caveat) continue;
+    if (runs.some((r) => r.seat.id === seat.id) || seat.triggers.some((t) => signals.includes(t))) caveats.push(seat.caveat);
+  }
   for (const r of runs) if (r.error) caveats.push(`The ${r.seat.name} seat failed and contributed nothing: ${r.error}`);
   return caveats;
 }

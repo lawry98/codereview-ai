@@ -23,7 +23,7 @@ export type SeatDefinition = {
   lens: string;
   notThisSeat: string;
   highestYield: string;
-  /** A structural gap this seat cannot close yet; it is carried into the verdict whenever the seat runs. */
+  /** A structural gap this seat cannot close yet; it is carried into the verdict whenever one of its triggers fires or the seat runs. */
   caveat?: string;
   /** Why the seat cannot run yet; it is always declined with this reason. */
   unavailable?: string;

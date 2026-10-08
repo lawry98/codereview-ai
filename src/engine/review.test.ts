@@ -66,6 +66,10 @@ describe("reviewPr", () => {
     if (outcome.kind !== "reviewed") return;
     const { report } = outcome;
     expect(report.team.seated.map((s) => s.seat)).toEqual(SEATS);
+    // Per-seat diagnostics: each seat ran one probe step and one report step, and logged the probe as evidence.
+    for (const seat of report.team.seated) {
+      expect(seat).toMatchObject({ steps: 2, evidenceLogged: 1, usage: { inputTokens: 200, outputTokens: 40, costUsd: expect.closeTo(0.03) } });
+    }
     expect(report.merged.findings[0]).toMatchObject({ severity: "major", verified: true, evidenceIds: ["correctness-1"] });
     expect(report.evidence.map((e) => e.id)).toEqual(["correctness-1"]);
     expect(report.execution).toBe("full");
@@ -195,6 +199,70 @@ describe("reviewPr", () => {
     expect(error instanceof Error && error.message).toBe("lead exploded (and snapshot snap_fake could not be deleted: auth expired)");
     expect(error instanceof Error && error.cause).toBe(original);
     expect(attempts).toEqual(["snap_fake"]);
+  });
+
+  it("normalises ./ and absolute sandbox paths in findings before checking that the file exists", async () => {
+    const at = (path: string) => ({ ...merged.findings[0], path });
+    const leadMerge = { ...merged, findings: [at("./src/a.ts"), at("/vercel/sandbox/repo/src/a.ts"), at("src/a.ts")] };
+    const factory = fakeFactory(repoAt(HEX), seatRunner());
+    const outcome = await reviewPr(URL, {
+      github: github(),
+      sandboxes: factory,
+      models: { lead: mockModel([textStep(JSON.stringify(fixtureBrief())), textStep(JSON.stringify(leadMerge))]), seat: seatModel(), ids },
+    });
+    expect(outcome.kind).toBe("reviewed");
+    if (outcome.kind !== "reviewed") return;
+    expect(outcome.report.merged.findings.map((f) => f.path)).toEqual(["src/a.ts", "src/a.ts", "src/a.ts"]);
+    expect(outcome.report.invariantNotes.join("\n")).not.toMatch(/Dropped/);
+  });
+
+  const UI_CAVEAT = "The UI was not rendered in a browser, so layout, contrast, focus rings and motion were not checked.";
+  const file = (path: string) => ({ path, status: "modified" as const, additions: 3, deletions: 1 });
+
+  it.each([
+    ["the team cap leaves the a11y seat out", [file("src/auth/login.tsx"), file("package.json")], [], /capped at 7/],
+    ["the lead declines the a11y seat", [file("src/Button.tsx")], [{ seat: "a11y", reason: "markup is unchanged" }], /^lead: markup is unchanged$/],
+  ])("keeps the UI-not-rendered caveat when %s", async (_case, files, declineSeats, declined) => {
+    const factory = fakeFactory(repoAt(HEX), seatRunner());
+    const outcome = await reviewPr(URL, {
+      github: github(fixtureTarget({ headSha: HEX, files })),
+      sandboxes: factory,
+      models: { lead: mockModel([textStep(JSON.stringify(fixtureBrief({ declineSeats }))), textStep(JSON.stringify(merged))]), seat: seatModel(), ids },
+    });
+    expect(outcome.kind).toBe("reviewed");
+    if (outcome.kind !== "reviewed") return;
+    expect(outcome.report.team.seated.map((s) => s.seat)).not.toContain("a11y");
+    expect(outcome.report.team.declined).toContainEqual({ seat: "a11y", reason: expect.stringMatching(declined) });
+    expect(outcome.report.merged.caveats.filter((c) => c === UI_CAVEAT)).toHaveLength(1);
+  });
+
+  it("states the UI-not-rendered caveat once when the a11y seat runs", async () => {
+    const factory = fakeFactory(repoAt(HEX), seatRunner());
+    const outcome = await reviewPr(URL, {
+      github: github(fixtureTarget({ headSha: HEX, files: [file("src/Button.tsx")] })),
+      sandboxes: factory,
+      models: { lead: mockModel([textStep(JSON.stringify(fixtureBrief())), textStep(JSON.stringify(merged))]), seat: seatModel(), ids },
+    });
+    expect(outcome.kind).toBe("reviewed");
+    if (outcome.kind !== "reviewed") return;
+    expect(outcome.report.team.seated.map((s) => s.seat)).toContain("a11y");
+    expect(outcome.report.merged.caveats.filter((c) => c === UI_CAVEAT)).toHaveLength(1);
+  });
+
+  it.each([
+    [1, "Baseline `test` fails at the PR head (exit 1). The sandbox has no network, so a test that needs it fails here; otherwise check whether the PR or its base is responsible."],
+    [137, "Baseline `test` timed out or was cut off at the PR head (exit 137), so it neither passes nor fails this PR."],
+    [-1, "Baseline `test` timed out or was cut off at the PR head (exit -1), so it neither passes nor fails this PR."],
+  ])("words a baseline check that exits %i without blaming the PR", async (exitCode, caveat) => {
+    const factory = fakeFactory(repoAt(HEX, { "npm run --silent test": { exitCode, output: "boom" } }), seatRunner());
+    const outcome = await reviewPr(URL, {
+      github: github(),
+      sandboxes: factory,
+      models: { lead: mockModel([textStep(JSON.stringify(fixtureBrief())), textStep(JSON.stringify(merged))]), seat: seatModel(), ids },
+    });
+    expect(outcome.kind).toBe("reviewed");
+    if (outcome.kind !== "reviewed") return;
+    expect(outcome.report.merged.caveats.filter((c) => c.startsWith("Baseline"))).toEqual([caveat]);
   });
 
   it("stops every seat sandbox and deletes the snapshot when a seat sandbox cannot be created", async () => {

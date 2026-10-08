@@ -23,7 +23,8 @@ export type ReviewReport = {
   execution: "full" | "static-only";
   baseline: Array<{ name: string; cmd: string; exitCode: number }>;
   team: {
-    seated: Array<{ seat: SeatId; name: string; why: string; findings: number; error?: string }>;
+    /** steps, usage and evidenceLogged tell a seat that found nothing apart from one that never ran a tool. */
+    seated: Array<{ seat: SeatId; name: string; why: string; findings: number; steps: number; usage: Usage; evidenceLogged: number; error?: string }>;
     declined: Array<{ seat: SeatId; reason: string }>;
   };
   merged: CheckedMerged;

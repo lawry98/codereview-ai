@@ -16,7 +16,10 @@ function report(overrides: Partial<ReviewReport> = {}): ReviewReport {
     target: { owner: "acme", repo: "widgets", number: 7, url: "https://github.com/acme/widgets/pull/7", title: "Fix rounding", state: "open", baseRef: "main", headSha: "headsha000000ff", mergeBase: "mergebase0000ff", changedLines: 7, fileCount: 1 },
     execution: "full",
     baseline: [{ name: "test", cmd: "npm run --silent test", exitCode: 0 }],
-    team: { seated: [{ seat: "correctness", name: "Correctness", why: "standing", findings: 1 }], declined: [{ seat: "security", reason: "no security-surface signal" }] },
+    team: {
+      seated: [{ seat: "correctness", name: "Correctness", why: "standing", findings: 1, steps: 2, evidenceLogged: 1, usage: { inputTokens: 200, outputTokens: 40, costUsd: 0.03 } }],
+      declined: [{ seat: "security", reason: "no security-surface signal" }],
+    },
     merged: { verdict: "Not mergeable: refunds round the wrong way.", caveats: [], findings: [finding()], assumptions: [], disagreements: [], doctrineNotes: [], notChecked: [] },
     evidence: [{ id: "correctness-1", seat: "correctness", kind: "command", cmd: "node -e 'console.log(Math.round(-2.5))'", exitCode: 0, output: "-2\n", durationMs: 40 }],
     invariantNotes: [],
@@ -57,6 +60,21 @@ describe("renderMarkdown", () => {
   it("prints cited evidence in collapsible blocks", () => {
     const md = renderMarkdown(report());
     expect(md).toContain("<details><summary><code>correctness-1</code> · <code>node -e &#39;console.log(Math.round(-2.5))&#39;</code> · exit 0</summary>");
+  });
+
+  it("shows each seat's steps, logged evidence and usage in the team table", () => {
+    const md = renderMarkdown(report({
+      team: {
+        seated: [
+          { seat: "correctness", name: "Correctness", why: "standing", findings: 1, steps: 12, evidenceLogged: 9, usage: { inputTokens: 45_000, outputTokens: 3_200, costUsd: 0.21 } },
+          { seat: "tests", name: "Test quality", why: "tests-changed", findings: 0, steps: 0, evidenceLogged: 0, usage: { inputTokens: 0, outputTokens: 0, costUsd: null }, error: "rate limited" },
+        ],
+        declined: [],
+      },
+    }));
+    expect(md).toContain("| Seat | Why it has a seat | Findings | Steps | Evidence logged | Usage |\n|---|---|---|---|---|---|");
+    expect(md).toContain("| Correctness | standing | 1 | 12 | 9 | $0.21 · 45k in / 3k out |");
+    expect(md).toContain("| Test quality | tests-changed | failed: rate limited | 0 | 0 | unmeasured · 0 in / 0 out |");
   });
 
   it("says when cost is unmeasured", () => {
@@ -107,7 +125,10 @@ describe("untrusted text", () => {
         doctrineNotes: [bad],
         notChecked: [bad],
       },
-      team: { seated: [{ seat: "correctness", name: "Correctness", why: bad, findings: 0, error: bad }], declined: [{ seat: "security", reason: bad }] },
+      team: {
+        seated: [{ seat: "correctness", name: "Correctness", why: bad, findings: 0, steps: 0, evidenceLogged: 0, usage: { inputTokens: 0, outputTokens: 0, costUsd: null }, error: bad }],
+        declined: [{ seat: "security", reason: bad }],
+      },
       baseline: [{ name: bad, cmd: "npm test", exitCode: 1 }],
       invariantNotes: [bad],
       provisionNotes: [bad],
