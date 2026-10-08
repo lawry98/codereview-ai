@@ -18,6 +18,10 @@ describe("gatePr", () => {
     const result = gatePr([file("src/a.ts"), file("cmd/main.go"), file("lib/x.rs")], opts);
     expect(result).toEqual({ ok: false, reason: "proofread executes JS/TS and Python only; this pull request changes .go, .rs files." });
   });
+  it("rejects shell and PowerShell code, naming the extension", () => {
+    expect(gatePr([file("src/a.ts"), file("scripts/deploy.sh")], opts)).toEqual({ ok: false, reason: "proofread executes JS/TS and Python only; this pull request changes .sh files." });
+    expect(gatePr([file("src/a.ts"), file("x.ps1")], opts)).toEqual({ ok: false, reason: "proofread executes JS/TS and Python only; this pull request changes .ps1 files." });
+  });
   it("accepts TypeScript", () => {
     expect(gatePr([file("src/a.tsx")], opts)).toEqual({ ok: true, ecosystems: ["node"], changedLines: 5 });
   });

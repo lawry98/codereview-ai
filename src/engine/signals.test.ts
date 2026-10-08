@@ -14,6 +14,12 @@ describe("computeSignals", () => {
   it("detects concurrency from a lock module", () => {
     expect(computeSignals(["src/lock.ts"])).toContain("concurrency");
   });
+  it("still detects lock and locks as a path segment or basename stem", () => {
+    expect(computeSignals(["src/locks/pool.ts", "lib/lock/index.ts"])).toEqual(["concurrency", "untested-behaviour-change"]);
+  });
+  it.each(["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock"])("lockfile %s signals dependencies only", (lockfile) => {
+    expect(computeSignals([lockfile])).toEqual(["dependencies"]);
+  });
   it("detects security, api and ui surfaces", () => {
     expect(computeSignals(["src/api/auth/session.tsx"])).toEqual(["user-interface", "api-surface", "security-surface", "untested-behaviour-change"]);
   });

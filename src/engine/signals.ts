@@ -26,7 +26,7 @@ const RULES: Array<[Signal, RegExp]> = [
   ["api-surface", /(^|\/)(api|routes?|handlers?|controllers?|endpoints?|graphql)\/|\.proto$|openapi|swagger|schema\.graphql/i],
   ["security-surface", /auth|crypt|token|session|passw|secret|creden|sanitiz|escape|upload|parse|deserial|pickle|eval|exec|subprocess|shell|sql|cors|csrf|xss/i],
   ["configuration", /(^|\/)(config|settings)|\.env|config\.(ts|js|mjs|cjs|py|json|ya?ml)$/i],
-  ["concurrency", /worker|queue|job|cron|thread|async|concurren|mutex|atomic|(^|[/_.-])locks?([/_.-]|$)/i],
+  ["concurrency", /worker|queue|job|cron|thread|async|concurren|mutex|atomic|(^|\/)locks?(\/|\.[^/]*$|$)/i],
   ["documentation", /\.(md|mdx|rst|txt)$|(^|\/)docs?\//i],
 ];
 
