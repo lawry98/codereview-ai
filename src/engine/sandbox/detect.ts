@@ -1,0 +1,124 @@
+import type { Ecosystem } from "../types";
+import { shq } from "../util/text";
+
+/** `safe` runs first with dependency install scripts off (security rule 6); `withScripts` only if needed. */
+export type InstallStep = { ecosystem: Ecosystem; label: string; safe: string; withScripts: string };
+export type CheckName = "typecheck" | "lint" | "test";
+export type Check = { name: CheckName; ecosystem: Ecosystem; cmd: string };
+export type ProjectInfo = { installs: InstallStep[]; checks: Check[]; notes: string[] };
+export type ProjectFiles = { rootFiles: string[]; read: (path: string) => string | null };
+
+type NodePm = "npm" | "pnpm" | "yarn" | "yarn-berry";
+
+const NPM_PLACEHOLDER_TEST = /no test specified/;
+
+export function detectProject(files: ProjectFiles): ProjectInfo {
+  const info: ProjectInfo = { installs: [], checks: [], notes: [] };
+  detectNode(files, info);
+  detectPython(files, info);
+  if (info.installs.length === 0) {
+    info.notes.push("No package.json, pyproject.toml or requirements file at the repo root; nothing was installed.");
+  }
+  return info;
+}
+
+function detectNode(files: ProjectFiles, info: ProjectInfo): void {
+  const raw = files.read("package.json");
+  if (raw === null) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    info.notes.push("package.json is not valid JSON; JS dependencies were not installed.");
+    return;
+  }
+  if (!isRecord(parsed)) {
+    info.notes.push("package.json is not valid JSON (expected an object); JS dependencies were not installed.");
+    return;
+  }
+  const pkg = parsed;
+  const pm = nodePm(files.rootFiles, pkg);
+  info.installs.push(nodeInstall(pm, files.rootFiles.includes("package-lock.json")));
+
+  // Only fixed, known script names are ever run: the names come from an untrusted package.json.
+  const scripts: Record<string, unknown> = isRecord(pkg.scripts) ? pkg.scripts : {};
+  const has = (name: string) => typeof scripts[name] === "string";
+  const typecheck = ["typecheck", "type-check", "tsc"].find(has);
+  if (typecheck) info.checks.push({ name: "typecheck", ecosystem: "node", cmd: runScript(pm, typecheck) });
+  else if (files.rootFiles.includes("tsconfig.json")) info.checks.push({ name: "typecheck", ecosystem: "node", cmd: execBin(pm, "tsc --noEmit") });
+  if (has("lint")) info.checks.push({ name: "lint", ecosystem: "node", cmd: runScript(pm, "lint") });
+  if (has("test") && !NPM_PLACEHOLDER_TEST.test(String(scripts.test))) info.checks.push({ name: "test", ecosystem: "node", cmd: runScript(pm, "test") });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function nodePm(rootFiles: string[], pkg: Record<string, unknown>): NodePm {
+  const declared = typeof pkg.packageManager === "string" ? pkg.packageManager : "";
+  if (rootFiles.includes("pnpm-lock.yaml") || declared.startsWith("pnpm@")) return "pnpm";
+  if (rootFiles.includes("yarn.lock") || declared.startsWith("yarn@")) {
+    return rootFiles.includes(".yarnrc.yml") || /^yarn@[2-9]/.test(declared) ? "yarn-berry" : "yarn";
+  }
+  return "npm";
+}
+
+function nodeInstall(pm: NodePm, hasNpmLock: boolean): InstallStep {
+  switch (pm) {
+    case "pnpm":
+      return { ecosystem: "node", label: "pnpm install", safe: "corepack enable && pnpm install --frozen-lockfile --ignore-scripts", withScripts: "corepack enable && pnpm install --frozen-lockfile" };
+    case "yarn":
+      return { ecosystem: "node", label: "yarn install", safe: "corepack enable && yarn install --frozen-lockfile --ignore-scripts", withScripts: "corepack enable && yarn install --frozen-lockfile" };
+    case "yarn-berry":
+      return { ecosystem: "node", label: "yarn install", safe: "corepack enable && yarn install --immutable --mode=skip-build", withScripts: "corepack enable && yarn install --immutable" };
+    case "npm":
+      return hasNpmLock
+        ? { ecosystem: "node", label: "npm ci", safe: "npm ci --ignore-scripts --no-audit --no-fund", withScripts: "npm ci --no-audit --no-fund" }
+        : { ecosystem: "node", label: "npm install", safe: "npm install --ignore-scripts --no-audit --no-fund", withScripts: "npm install --no-audit --no-fund" };
+  }
+}
+
+function runScript(pm: NodePm, script: string): string {
+  if (pm === "npm") return `npm run --silent ${script}`;
+  if (pm === "pnpm") return `pnpm run --silent ${script}`;
+  return `yarn run ${script}`;
+}
+
+function execBin(pm: NodePm, bin: string): string {
+  if (pm === "npm") return `npx --no-install ${bin}`;
+  if (pm === "pnpm") return `pnpm exec ${bin}`;
+  return `yarn ${bin}`;
+}
+
+function detectPython(files: ProjectFiles, info: ProjectInfo): void {
+  const has = (name: string) => files.rootFiles.includes(name);
+  const pyproject = files.read("pyproject.toml") ?? "";
+  const requirements = files.rootFiles.filter((f) => /^requirements[^/]*\.txt$/.test(f)).sort();
+  if (!has("pyproject.toml") && requirements.length === 0 && !has("setup.py")) return;
+
+  const venv = "python3 -m venv .venv";
+  if (has("uv.lock")) {
+    const uv = `(command -v uv >/dev/null || python3 -m pip install -q --user --break-system-packages uv) && export PATH="$HOME/.local/bin:$PATH" && uv sync --frozen --all-extras`;
+    info.installs.push({ ecosystem: "python", label: "uv sync", safe: `${uv} --no-build`, withScripts: uv });
+  } else if (requirements.length > 0) {
+    const reqs = requirements.map((r) => `-r ${shq(r)}`).join(" ");
+    info.installs.push({
+      ecosystem: "python",
+      label: "pip install -r",
+      safe: `${venv} && .venv/bin/pip install -q --only-binary=:all: ${reqs}`,
+      withScripts: `${venv} && .venv/bin/pip install -q ${reqs}`,
+    });
+  } else {
+    const editable = `${venv} && (.venv/bin/pip install -q -e ".[dev,test]" || .venv/bin/pip install -q -e .)`;
+    info.installs.push({ ecosystem: "python", label: "pip install -e .", safe: editable, withScripts: editable });
+    info.notes.push("Installing the project itself builds it from source, so Python install scripts cannot be switched off for this repo.");
+  }
+
+  const dependencyText = [pyproject, ...requirements.map((r) => files.read(r) ?? "")].join("\n");
+  const py = ".venv/bin/python -m";
+  if (/\[tool\.mypy\]/.test(pyproject) || has("mypy.ini")) info.checks.push({ name: "typecheck", ecosystem: "python", cmd: `${py} mypy .` });
+  if (/\[tool\.ruff/.test(pyproject) || has("ruff.toml") || has(".ruff.toml")) info.checks.push({ name: "lint", ecosystem: "python", cmd: `${py} ruff check .` });
+  if (/\bpytest\b/.test(dependencyText) || has("pytest.ini") || has("conftest.py") || has("tests")) {
+    info.checks.push({ name: "test", ecosystem: "python", cmd: `${py} pytest -q -p no:cacheprovider` });
+  }
+}
