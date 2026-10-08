@@ -119,9 +119,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Extract content from response
-    const content = response.content[0];
-    if (content.type !== 'text') {
+    // Extract the text block (adaptive thinking puts a thinking block first)
+    const content = response.content.find((block) => block.type === 'text');
+    if (!content || content.type !== 'text') {
       throw new Error('Unexpected response type from Claude');
     }
 
