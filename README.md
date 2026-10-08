@@ -22,7 +22,7 @@ An AI-powered code review tool that provides instant, intelligent feedback on yo
 - **Styling**: Tailwind CSS + ShadCN UI
 - **Database**: Supabase (PostgreSQL)
 - **Authentication**: Supabase Auth (Google OAuth + Magic Link)
-- **AI**: Anthropic Claude API (claude-sonnet-4-20250514)
+- **AI**: Anthropic Claude API (claude-opus-5-5)
 - **Code Editor**: react-simple-code-editor + prism-react-renderer
 - **Deployment**: Vercel
 

@@ -6,11 +6,11 @@ export const anthropic = new Anthropic({
 });
 
 // Claude model to use
-export const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
+export const CLAUDE_MODEL = 'claude-opus-5-5';
 
-// Default generation parameters
+// Default generation parameters. Opus 5.5 rejects `temperature`, and its
+// thinking tokens count toward `max_tokens`, so leave room for both.
 export const DEFAULT_GENERATION_CONFIG = {
   model: CLAUDE_MODEL,
-  max_tokens: 4096,
-  temperature: 0.3,
+  max_tokens: 16000,
 } as const;
