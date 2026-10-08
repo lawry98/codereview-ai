@@ -45,8 +45,17 @@ export async function provision(target: PrTarget, factory: SandboxFactory): Prom
     const { headSha, mergeBase } = sources;
 
     const diff = await base.run(`git diff --no-color --no-ext-diff ${shq(mergeBase)} HEAD`, { maxOutputBytes: 400_000 });
+    if (diff.exitCode !== 0) {
+      await base.stop();
+      return unresolvedResult(headSha, notes, `git diff failed (exit ${diff.exitCode}): ${lastLine(diff.output)}`);
+    }
     if (diff.truncated) notes.push("The diff was too large to hand to reviewers in full; they saw its tail and read files directly.");
-    const headFiles = lines((await base.run("git ls-files", { maxOutputBytes: 4_000_000 })).output);
+    const listed = await base.run("git ls-files", { maxOutputBytes: 4_000_000 });
+    if (listed.exitCode !== 0) {
+      await base.stop();
+      return unresolvedResult(headSha, notes, `git ls-files failed (exit ${listed.exitCode}): ${lastLine(listed.output)}`);
+    }
+    const headFiles = lines(listed.output);
 
     // detectProject is synchronous, so the root manifests are read from the sandbox up front; repo files are never read on the host.
     const rootFiles = lines((await base.run("ls -1A", { maxOutputBytes: 200_000 })).output);
@@ -83,14 +92,26 @@ export async function provision(target: PrTarget, factory: SandboxFactory): Prom
     let baseline = await runChecks(base, project.checks.filter((c) => !failedEcosystems.has(c.ecosystem)));
 
     // Packages like esbuild install "successfully" with scripts off and then fail at runtime.
-    const failing = baseline.filter((b) => b.result.exitCode !== 0);
+    // Only node checks can be fixed by a node reinstall; a failing Python check must not reopen the network for it.
+    const failing = baseline.filter((b) => b.result.exitCode !== 0 && b.check.ecosystem === "node");
     const retryable = project.installs.filter(
       (s) => s.ecosystem === "node" && !failedEcosystems.has("node") && !installs.find((i) => i.label === s.label)?.scriptsEnabled,
     );
     if (failing.length > 0 && retryable.length > 0) {
       await base.setNetwork(INSTALL_NETWORK);
       const reinstalls: CommandResult[] = [];
-      for (const step of retryable) reinstalls.push(await base.run(step.withScripts, { timeoutMs: SANDBOX_LIMITS.installTimeoutMs }));
+      for (const step of retryable) {
+        const reinstall = await base.run(step.withScripts, { timeoutMs: SANDBOX_LIMITS.installTimeoutMs });
+        reinstalls.push(reinstall);
+        if (reinstall.exitCode !== 0) {
+          // The scripts ran with the network open and `npm ci` already deleted node_modules, so this must be on the record.
+          installs.push({ label: step.label, result: reinstall, scriptsEnabled: true });
+          installScriptsNeeded = true;
+          notes.push(
+            `${step.label} with dependency install scripts enabled failed (exit ${reinstall.exitCode}); node_modules may be incomplete and the baseline shows the run before the reinstall.`,
+          );
+        }
+      }
       await base.setNetwork(LOCKED_NETWORK);
       if (reinstalls.every((r) => r.exitCode === 0)) {
         const rerun = await runChecks(base, failing.map((f) => f.check));
@@ -105,10 +126,18 @@ export async function provision(target: PrTarget, factory: SandboxFactory): Prom
       }
     }
 
-    const dirty = await base.run("git status --porcelain --untracked-files=no");
+    // Repo code ran in this sandbox. It can edit, stage or commit, so restore the reviewed commit outright
+    // (`git checkout -- .` restores from the index and `git status` cannot see a commit), then verify.
+    const status = "git status --porcelain --untracked-files=no";
+    const dirty = await base.run(status);
     if (dirty.output.trim() !== "") {
       notes.push(`Install or checks modified tracked files (reverted before review): ${lines(dirty.output).join("; ")}`);
-      await base.run("git checkout -- .");
+    }
+    const reset = await base.run(`git reset -q --hard ${shq(headSha)}`);
+    const restored = await base.run(status);
+    if (reset.exitCode !== 0 || restored.exitCode !== 0 || restored.output.trim() !== "") {
+      const detail = lines(`${reset.exitCode !== 0 ? reset.output : ""}\n${restored.output}`).join("; ") || "no output";
+      notes.push(`The tracked tree could not be restored to ${headSha.slice(0, 12)} after install or checks; the snapshot may differ from the reviewed commit: ${detail}`);
     }
 
     const doctrine = await readDoctrine(base, notes);
@@ -149,7 +178,9 @@ async function fetchSources(
 
   const checkout = await base.run(`git checkout -q --detach ${shq(target.headSha)} 2>/dev/null || git checkout -q --detach origin/pr`);
   if (checkout.exitCode !== 0) return { ok: false, problem: `Could not check out the PR head: ${lastLine(checkout.output)}` };
-  const headSha = (await base.run("git rev-parse HEAD")).output.trim();
+  const revParse = await base.run("git rev-parse HEAD");
+  if (revParse.exitCode !== 0) return { ok: false, problem: `git rev-parse HEAD failed (exit ${revParse.exitCode}): ${lastLine(revParse.output)}` };
+  const headSha = revParse.output.trim();
   if (headSha !== target.headSha) {
     notes.push(`The PR head moved after its metadata was fetched; reviewing ${headSha.slice(0, 12)} instead of ${target.headSha.slice(0, 12)}.`);
   }
