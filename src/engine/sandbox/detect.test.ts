@@ -5,6 +5,9 @@ function project(files: Record<string, string>, extraRoot: string[] = []) {
   return detectProject({ rootFiles: [...Object.keys(files), ...extraRoot], read: (p) => files[p] ?? null });
 }
 
+const YARN_NOTE = "Yarn loads the repository's own yarn release or plugins (yarnPath/plugins in .yarnrc.yml, yarn-path in .yarnrc), so repository code runs during install even with build scripts skipped.";
+const UV_NOTE = "uv sync builds and installs the project itself, so its build backend runs even in the scripts-off pass.";
+
 describe("detectProject — node", () => {
   it("uses npm ci with scripts off and runs the known scripts", () => {
     const info = project({
@@ -23,13 +26,33 @@ describe("detectProject — node", () => {
 
   it("detects pnpm from its lockfile", () => {
     const info = project({ "package.json": JSON.stringify({ scripts: { test: "vitest" } }), "pnpm-lock.yaml": "" });
-    expect(info.installs[0].safe).toBe("corepack enable && pnpm install --frozen-lockfile --ignore-scripts");
+    expect(info.installs[0].safe).toBe("corepack enable && pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile");
     expect(info.checks).toEqual([{ name: "test", ecosystem: "node", cmd: "pnpm run --silent test" }]);
   });
 
   it("detects yarn berry", () => {
     const info = project({ "package.json": "{}", "yarn.lock": "", ".yarnrc.yml": "" });
     expect(info.installs[0]).toMatchObject({ safe: "corepack enable && yarn install --immutable --mode=skip-build", withScripts: "corepack enable && yarn install --immutable" });
+  });
+
+  it("notes when yarn berry loads its own release via yarnPath", () => {
+    const info = project({ "package.json": "{}", "yarn.lock": "", ".yarnrc.yml": "yarnPath: .yarn/releases/yarn-4.js\n" });
+    expect(info.notes).toContain(YARN_NOTE);
+  });
+
+  it("notes when yarn berry loads plugins from the repository", () => {
+    const info = project({ "package.json": "{}", "yarn.lock": "", ".yarnrc.yml": "plugins:\n  - path: .yarn/plugins/x.cjs\n" });
+    expect(info.notes).toContain(YARN_NOTE);
+  });
+
+  it("notes when classic yarn loads its own release via yarn-path", () => {
+    const info = project({ "package.json": "{}", "yarn.lock": "", ".yarnrc": "yarn-path ./bin/yarn.js\n" });
+    expect(info.notes).toContain(YARN_NOTE);
+  });
+
+  it("adds no yarn note when the repository's yarn config does not load code", () => {
+    const info = project({ "package.json": "{}", "yarn.lock": "", ".yarnrc.yml": "nodeLinker: node-modules\n" });
+    expect(info.notes).toEqual([]);
   });
 
   it("skips npm's placeholder test script and falls back to tsc when there is a tsconfig", () => {
@@ -42,6 +65,17 @@ describe("detectProject — node", () => {
     const info = project({ "package.json": "{nope" });
     expect(info.installs).toEqual([]);
     expect(info.notes.join("\n")).toMatch(/package\.json is not valid JSON/);
+  });
+
+  it("does not claim nothing was installed when package.json exists but is invalid", () => {
+    const info = project({ "package.json": "{nope" });
+    expect(info.notes).toEqual(["package.json is not valid JSON; JS dependencies were not installed."]);
+  });
+
+  it("notes a null package.json instead of throwing", () => {
+    const info = project({ "package.json": "null" });
+    expect(info.installs).toEqual([]);
+    expect(info.notes).toEqual(["package.json is not valid JSON (expected an object); JS dependencies were not installed."]);
   });
 });
 
@@ -74,5 +108,51 @@ describe("detectProject — python", () => {
 
   it("notes when there is nothing to install", () => {
     expect(project({}).notes.join("\n")).toMatch(/nothing was installed/);
+  });
+
+  it("notes a requirements file that makes pip build from source via --no-binary", () => {
+    const info = project({ "requirements.txt": "--no-binary :all:\nrequests==2.31.0\n" });
+    expect(info.notes).toEqual([
+      "requirements.txt can make pip build packages from source (--no-binary), so Python install scripts may run even in the scripts-off pass.",
+    ]);
+  });
+
+  it("notes an editable requirement, which pip builds from source", () => {
+    const info = project({ "requirements.txt": "-e ./src\n" });
+    expect(info.notes).toEqual([
+      "requirements.txt can make pip build packages from source (--editable), so Python install scripts may run even in the scripts-off pass.",
+    ]);
+  });
+
+  it("joins backslash-continued lines before looking for build options", () => {
+    const info = project({ "requirements.txt": "--no-\\\nbinary :all:\n" });
+    expect(info.notes).toEqual([
+      "requirements.txt can make pip build packages from source (--no-binary), so Python install scripts may run even in the scripts-off pass.",
+    ]);
+  });
+
+  it("adds no pip note for plain pinned requirements", () => {
+    expect(project({ "requirements.txt": "pytest==8.0\nrequests==2.31.0  # pinned\n" }).notes).toEqual([]);
+  });
+
+  it("notes local-path requirements, including a bare dot and a PEP 508 relative path", () => {
+    const info = project({ "requirements.txt": "./vendor/pkg\n.\nname @ ../x\n" });
+    expect(info.notes).toEqual([
+      "requirements.txt can make pip build packages from source (a local path), so Python install scripts may run even in the scripts-off pass.",
+    ]);
+  });
+
+  it("ignores URLs that only appear in comments", () => {
+    expect(project({ "requirements.txt": "requests==2.31.0 # see https://example.com/docs\n" }).notes).toEqual([]);
+  });
+
+  it("notes a uv project whose pyproject has a build-system table", () => {
+    const info = project({ "pyproject.toml": "[build-system]\nrequires = ['setuptools']\n[project]\nname = 'x'\n", "uv.lock": "" });
+    expect(info.notes).toContain(UV_NOTE);
+  });
+
+  it("adds no uv note for a uv project without a build-system table", () => {
+    const info = project({ "pyproject.toml": "[project]\nname = 'x'\n", "uv.lock": "" });
+    expect(info.notes).toEqual([]);
   });
 });

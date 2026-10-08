@@ -11,12 +11,26 @@ export type ProjectFiles = { rootFiles: string[]; read: (path: string) => string
 type NodePm = "npm" | "pnpm" | "yarn" | "yarn-berry";
 
 const NPM_PLACEHOLDER_TEST = /no test specified/;
+const MANIFEST_FILE = /^(?:package\.json|pyproject\.toml|setup\.py|requirements[^/]*\.txt)$/;
+const YARN_LOADS_REPO_CODE_NOTE =
+  "Yarn loads the repository's own yarn release or plugins (yarnPath/plugins in .yarnrc.yml, yarn-path in .yarnrc), so repository code runs during install even with build scripts skipped.";
+const UV_BUILDS_PROJECT_NOTE = "uv sync builds and installs the project itself, so its build backend runs even in the scripts-off pass.";
+
+/** Each pattern marks a requirement line that can make pip build a package from source. */
+const PIP_BUILD_HINTS: ReadonlyArray<readonly [label: string, pattern: RegExp]> = [
+  ["--editable", /^(?:-e\b|--editable\b)/],
+  ["--no-binary", /^--no-binary\b/],
+  ["a nested -r/-c file", /^(?:-[rc]|--requirement\b|--constraint\b)/],
+  ["a VCS URL", /(?:^|[\s@])(?:git|hg|svn|bzr)\+/],
+  ["a URL", /:\/\//],
+  ["a local path", /^(?:\.{1,2}(?:\/|$)|\/|file:)|@\s*(?:\.{0,2}\/|file:)/],
+];
 
 export function detectProject(files: ProjectFiles): ProjectInfo {
   const info: ProjectInfo = { installs: [], checks: [], notes: [] };
   detectNode(files, info);
   detectPython(files, info);
-  if (info.installs.length === 0) {
+  if (!files.rootFiles.some((f) => MANIFEST_FILE.test(f))) {
     info.notes.push("No package.json, pyproject.toml or requirements file at the repo root; nothing was installed.");
   }
   return info;
@@ -39,6 +53,7 @@ function detectNode(files: ProjectFiles, info: ProjectInfo): void {
   const pkg = parsed;
   const pm = nodePm(files.rootFiles, pkg);
   info.installs.push(nodeInstall(pm, files.rootFiles.includes("package-lock.json")));
+  if ((pm === "yarn" || pm === "yarn-berry") && yarnLoadsRepoCode(files)) info.notes.push(YARN_LOADS_REPO_CODE_NOTE);
 
   // Only fixed, known script names are ever run: the names come from an untrusted package.json.
   const scripts: Record<string, unknown> = isRecord(pkg.scripts) ? pkg.scripts : {};
@@ -63,10 +78,17 @@ function nodePm(rootFiles: string[], pkg: Record<string, unknown>): NodePm {
   return "npm";
 }
 
+/** Yarn reads these keys and then runs a release or plugin shipped inside the repository. */
+function yarnLoadsRepoCode(files: ProjectFiles): boolean {
+  const berryConfig = files.read(".yarnrc.yml") ?? "";
+  const classicConfig = files.read(".yarnrc") ?? "";
+  return /^\s*(?:yarnPath|plugins)\s*:/m.test(berryConfig) || /^\s*yarn-path\b/m.test(classicConfig);
+}
+
 function nodeInstall(pm: NodePm, hasNpmLock: boolean): InstallStep {
   switch (pm) {
     case "pnpm":
-      return { ecosystem: "node", label: "pnpm install", safe: "corepack enable && pnpm install --frozen-lockfile --ignore-scripts", withScripts: "corepack enable && pnpm install --frozen-lockfile" };
+      return { ecosystem: "node", label: "pnpm install", safe: "corepack enable && pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile", withScripts: "corepack enable && pnpm install --frozen-lockfile" };
     case "yarn":
       return { ecosystem: "node", label: "yarn install", safe: "corepack enable && yarn install --frozen-lockfile --ignore-scripts", withScripts: "corepack enable && yarn install --frozen-lockfile" };
     case "yarn-berry":
@@ -100,6 +122,7 @@ function detectPython(files: ProjectFiles, info: ProjectInfo): void {
   if (has("uv.lock")) {
     const uv = `(command -v uv >/dev/null || python3 -m pip install -q --user --break-system-packages uv) && export PATH="$HOME/.local/bin:$PATH" && uv sync --frozen --all-extras`;
     info.installs.push({ ecosystem: "python", label: "uv sync", safe: `${uv} --no-build`, withScripts: uv });
+    if (/^\s*\[build-system\]/m.test(pyproject)) info.notes.push(UV_BUILDS_PROJECT_NOTE);
   } else if (requirements.length > 0) {
     const reqs = requirements.map((r) => `-r ${shq(r)}`).join(" ");
     info.installs.push({
@@ -108,6 +131,12 @@ function detectPython(files: ProjectFiles, info: ProjectInfo): void {
       safe: `${venv} && .venv/bin/pip install -q --only-binary=:all: ${reqs}`,
       withScripts: `${venv} && .venv/bin/pip install -q ${reqs}`,
     });
+    for (const file of requirements) {
+      const hints = pipBuildHints(files.read(file) ?? "");
+      if (hints.length > 0) {
+        info.notes.push(`${file} can make pip build packages from source (${hints.join(", ")}), so Python install scripts may run even in the scripts-off pass.`);
+      }
+    }
   } else {
     const editable = `${venv} && (.venv/bin/pip install -q -e ".[dev,test]" || .venv/bin/pip install -q -e .)`;
     info.installs.push({ ecosystem: "python", label: "pip install -e .", safe: editable, withScripts: editable });
@@ -121,4 +150,16 @@ function detectPython(files: ProjectFiles, info: ProjectInfo): void {
   if (/\bpytest\b/.test(dependencyText) || has("pytest.ini") || has("conftest.py") || has("tests")) {
     info.checks.push({ name: "test", ecosystem: "python", cmd: `${py} pytest -q -p no:cacheprovider` });
   }
+}
+
+/** Labels of the build-from-source hints in a requirements file. Backslash-continued lines are joined, as pip does. */
+function pipBuildHints(text: string): string[] {
+  const found = new Set<string>();
+  for (const raw of text.replace(/\\\r?\n/g, "").split(/\r?\n/)) {
+    const line = raw.replace(/(?:^|\s)#.*$/, "").trim();
+    for (const [label, pattern] of PIP_BUILD_HINTS) {
+      if (pattern.test(line)) found.add(label);
+    }
+  }
+  return [...found];
 }
