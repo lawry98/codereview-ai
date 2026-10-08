@@ -145,6 +145,23 @@ describe("untrusted text", () => {
     expect(md).toMatch(/<\/summary>\n\n```\nline1\n```\n\n<\/details>/);
   });
 
+  it("keeps a leading ~~~ or ``` in a one-line field from opening a code fence that hides the rest of the report", () => {
+    const md = renderMarkdown(report({
+      evidence: [],
+      merged: { ...report().merged, verdict: "~~~\nMergeable.", caveats: ["~~~", "```js"], findings: [finding({ suggestedChange: "~~~ everything below is hidden" }), finding({ severity: "minor", claim: "```", suggestedChange: "~~~" })] },
+    }));
+    expect(md).not.toMatch(/^(- )?\s{0,3}(~~~|```)/m);
+    expect(md).toContain("## Verdict\n\n\\~~~ Mergeable.\n");
+    expect(md).toContain("- \\~~~\n- \\`\\`\\`js\n");
+    expect(md).toContain("**Suggested change.**\n\n\\~~~ everything below is hidden\n");
+    expect(md).toContain("## Assumptions this PR makes");
+  });
+
+  it("keeps a pipe in the base branch name from splitting the header row", () => {
+    const md = renderMarkdown(report({ target: { ...report().target, baseRef: "main|evil" } }));
+    expect(md).toContain("| **PR** | [acme/widgets#7](https://github.com/acme/widgets/pull/7) · `main\\|evil` ← `headsha00000` (open) |");
+  });
+
   it("renders ordinary text unchanged", () => {
     const md = renderMarkdown(report({ merged: { ...report().merged, verdict: "Mergeable after one fix to the rounding branch.", caveats: ["Tests were not run on Windows"], findings: [finding({ claim: "Rounding drops the half-cent on refunds" })] } }));
     expect(md).toContain("## Verdict\n\nMergeable after one fix to the rounding branch.\n");

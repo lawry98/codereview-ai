@@ -10,12 +10,16 @@ export const MAX_NITS = 10;
 
 const where = (f: { path: string; line: number | null }) => (f.line ? `${f.path}:${f.line}` : f.path);
 
-/** Six proved findings beat fourteen skimmed ones; extras survive as one-liners. */
+/** Most severe first. Array sort is stable, so the model's order holds within a severity. */
+const bySeverity = (a: { severity: Severity }, b: { severity: Severity }) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity);
+
+/** Six proved findings beat fourteen skimmed ones; extras survive as one-liners. The cut is by severity, not the model's order. */
 export function capSeatReport(report: SeatReport): SeatReport {
-  const extra = report.findings.slice(MAX_SEAT_FINDINGS).map((f) => `${f.claim} (${where(f)})`);
+  const ranked = [...report.findings].sort(bySeverity);
+  const extra = ranked.slice(MAX_SEAT_FINDINGS).map((f) => `${f.claim} (${where(f)})`);
   return {
     ...report,
-    findings: report.findings.slice(0, MAX_SEAT_FINDINGS),
+    findings: ranked.slice(0, MAX_SEAT_FINDINGS),
     assumptions: report.assumptions.slice(0, MAX_ASSUMPTIONS),
     notPursued: [...report.notPursued, ...extra],
   };
@@ -46,7 +50,7 @@ export function enforceInvariants(
     }
   }
 
-  findings.sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity));
+  findings.sort(bySeverity);
   const extraNits = new Set(findings.filter((f) => f.severity === "nit").slice(MAX_NITS));
   if (extraNits.size > 0) notes.push(`Cut ${extraNits.size} nits beyond the first ${MAX_NITS}.`);
 

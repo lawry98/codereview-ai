@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Merged, MergedFinding } from "./agents/schemas";
+import type { Merged, MergedFinding, Severity } from "./agents/schemas";
 import { EvidenceLog } from "./evidence";
 import { capSeatReport, enforceInvariants } from "./invariants";
 import { fixtureSeatReport } from "./test-fixtures";
@@ -66,5 +66,15 @@ describe("capSeatReport", () => {
     expect(capped.findings).toHaveLength(6);
     expect(capped.assumptions).toHaveLength(5);
     expect(capped.notPursued).toEqual(["c6 (src/a.ts:3)", "c7 (src/a.ts:3)"]);
+  });
+
+  it("keeps the six most severe findings, so a seventh-listed blocker is not cut to a one-liner", () => {
+    const base = fixtureSeatReport();
+    const at = (severity: Severity, claim: string) => ({ ...base.findings[0], severity, claim });
+    const findings = [at("nit", "n1"), at("minor", "m1"), at("nit", "n2"), at("major", "ma1"), at("nit", "n3"), at("minor", "m2"), at("blocker", "b1"), at("nit", "n4")];
+    const capped = capSeatReport({ ...base, findings });
+    expect(capped.findings.map((f) => f.claim)).toEqual(["b1", "ma1", "m1", "m2", "n1", "n2"]);
+    expect(capped.notPursued).toEqual(["n3 (src/a.ts:3)", "n4 (src/a.ts:3)"]);
+    expect(findings[0].claim).toBe("n1");
   });
 });

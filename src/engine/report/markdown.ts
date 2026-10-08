@@ -8,7 +8,7 @@ export function renderMarkdown(r: ReviewReport): string {
 
   out.push(`# proofread: ${t.owner}/${t.repo}#${t.number} — ${oneLine(t.title)}`, "");
   out.push("| | |", "|---|---|");
-  out.push(`| **PR** | [${t.owner}/${t.repo}#${t.number}](${t.url}) · ${codeSpan(t.baseRef)} ← \`${short(t.headSha)}\` (${t.state}) |`);
+  out.push(`| **PR** | [${t.owner}/${t.repo}#${t.number}](${t.url}) · ${tableCode(t.baseRef)} ← \`${short(t.headSha)}\` (${t.state}) |`);
   out.push(`| **Merge base** | \`${short(t.mergeBase)}\` |`);
   out.push(`| **Size** | ${t.fileCount} files · ${t.changedLines} changed lines |`);
   out.push(`| **Execution** | ${r.execution === "full" ? "full: dependencies installed, checks run in a sandbox" : "**static-only**: dependencies could not be installed; nothing was executed"} |`);
@@ -118,7 +118,10 @@ const short = (sha: string) => sha.slice(0, 12);
 const flat = (text: string) => text.replace(/\s+/g, " ").trim();
 const html = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
-/** One line of prose, escaped so attacker-written text cannot start a block, a heading or markup. */
+/**
+ * One line of prose, escaped so attacker-written text cannot start a block, a heading or markup.
+ * Escaped backticks cannot open a fence; a leading `~` is escaped too, or `~~~` would open one that hides the rest of the report.
+ */
 function oneLine(text: string): string {
   return flat(text)
     .replace(/\\/g, "\\\\")
@@ -126,7 +129,7 @@ function oneLine(text: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/[`*_[\]|]/g, "\\$&")
-    .replace(/^#/, "\\#");
+    .replace(/^[#~]/, "\\$&");
 }
 
 /** A code span whose delimiter outlasts every backtick run inside, so the text cannot close it early. */
