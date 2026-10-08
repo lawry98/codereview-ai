@@ -1,5 +1,15 @@
 # CodeReview AI
 
+> **v2 in progress: proofread.** A team of AI reviewers that prove findings by running the PR's code in a sandbox. Design: [`docs/v2-design.md`](docs/v2-design.md).
+>
+> ```bash
+> vercel link && vercel env pull .env.local   # sandbox credentials (VERCEL_OIDC_TOKEN)
+> echo "AI_GATEWAY_API_KEY=..." >> .env.local  # model access through AI Gateway
+> npm run review -- https://github.com/<owner>/<repo>/pull/<n>
+> ```
+>
+> Reports land in `.proofread/reviews/` as markdown and JSON. JS/TS and Python PRs up to 800 changed lines.
+
 An AI-powered code review tool that provides instant, intelligent feedback on your code. Identify bugs, security vulnerabilities, performance issues, and get actionable refactoring suggestions.
 
 ## Features
