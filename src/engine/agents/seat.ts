@@ -24,7 +24,7 @@ export const SEAT_MAX_STEPS = 40;
  * tool steps included.
  */
 export const MODEL_CALL_LIMITS = {
-  /** Ends the seat before its sandbox's own timeout, after which the SDK silently resumes into a fresh, empty session. */
+  /** Below the seat sandbox's own timeout, after which the SDK silently resumes into a fresh, empty session. The tools ignore the abort, so commands already queued in the step still run first. */
   seat: { maxOutputTokens: 16_000, timeout: { totalMs: SANDBOX_LIMITS.sandboxTimeoutMs - 5 * 60_000 } },
   brief: { maxOutputTokens: 16_000, timeout: { totalMs: 10 * 60_000 } },
   /** A seven-seat merge is the longest output in a review. */
