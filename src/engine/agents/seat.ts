@@ -1,0 +1,64 @@
+import { generateText, Output, stepCountIs, type LanguageModel } from "ai";
+import type { SeatDefinition } from "../roster";
+import { seatSystemPrompt, seatUserPrompt, type ReviewContext } from "./prompts";
+import { SeatReportSchema, type Brief, type SeatReport } from "./schemas";
+import type { SeatTools } from "./tools";
+import { usageFrom, type Usage } from "./usage";
+
+export type SeatRun = {
+  seat: SeatDefinition;
+  why: string;
+  report: SeatReport;
+  usage: Usage;
+  steps: number;
+  durationMs: number;
+  error?: string;
+};
+
+export const SEAT_MAX_STEPS = 40;
+
+/** Runs one seat as a tool loop in its own sandbox. Never throws: a failed seat returns an empty report that says why. */
+export async function runSeat(input: {
+  model: LanguageModel;
+  seat: SeatDefinition;
+  why: string;
+  ctx: ReviewContext;
+  brief: Brief;
+  tools: SeatTools;
+  maxSteps?: number;
+}): Promise<SeatRun> {
+  const started = Date.now();
+  const maxSteps = input.maxSteps ?? SEAT_MAX_STEPS;
+  const questions = input.brief.startHere.find((s) => s.seat === input.seat.id)?.questions ?? [];
+  try {
+    const result = await generateText({
+      model: input.model,
+      system: seatSystemPrompt(input.seat, input.ctx),
+      prompt: seatUserPrompt(input.ctx, input.brief, questions),
+      tools: input.tools,
+      stopWhen: stepCountIs(maxSteps),
+      // On the last allowed step, force the report instead of another tool call.
+      prepareStep: ({ stepNumber }) => (stepNumber >= maxSteps - 1 ? { toolChoice: "none" as const } : {}),
+      output: Output.object({ schema: SeatReportSchema }),
+    });
+    return {
+      seat: input.seat,
+      why: input.why,
+      report: result.output,
+      usage: usageFrom(result.totalUsage, result.steps.map((s) => s.providerMetadata)),
+      steps: result.steps.length,
+      durationMs: Date.now() - started,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      seat: input.seat,
+      why: input.why,
+      report: { findings: [], notPursued: [], assumptions: [], notChecked: [`This seat failed and contributed nothing: ${message}`] },
+      usage: { inputTokens: 0, outputTokens: 0, costUsd: null },
+      steps: 0,
+      durationMs: Date.now() - started,
+      error: message,
+    };
+  }
+}
