@@ -49,6 +49,12 @@ export async function provision(target: PrTarget, factory: SandboxFactory): Prom
       await base.stop();
       return unresolvedResult(headSha, notes, `git diff failed (exit ${diff.exitCode}): ${lastLine(diff.output)}`);
     }
+    // A wrong merge base yields an empty diff, and a review of an empty diff would read as a clean bill of health.
+    if (diff.output.trim() === "" && target.files.length > 0) {
+      await base.stop();
+      const files = `${target.files.length} changed ${target.files.length === 1 ? "file" : "files"}`;
+      return unresolvedResult(headSha, notes, `The diff from merge base ${mergeBase.slice(0, 12)} to the PR head is empty, but GitHub lists ${files}; a review of it would see nothing.`);
+    }
     if (diff.truncated) notes.push("The diff was too large to hand to reviewers in full; they saw its tail and read files directly.");
     const listed = await base.run("git ls-files", { maxOutputBytes: 4_000_000 });
     if (listed.exitCode !== 0) {
@@ -81,8 +87,12 @@ export async function provision(target: PrTarget, factory: SandboxFactory): Prom
         installScriptsNeeded = true;
         notes.push(`${step.label} only succeeded with dependency install scripts enabled.`);
       } else {
+        // The retry ran dependency install scripts with the network open, so that is on the record even though it failed.
+        installScriptsNeeded = true;
         failedEcosystems.add(step.ecosystem);
-        notes.push(`${step.label} failed (exit ${full.exitCode}); ${step.ecosystem} checks were skipped and reviewers work without those dependencies.`);
+        notes.push(
+          `${step.label} failed with dependency install scripts disabled and enabled (exit ${full.exitCode}); ${step.ecosystem} checks were skipped and reviewers work without those dependencies.`,
+        );
       }
     }
     const execution: ProvisionResult["execution"] =
@@ -169,12 +179,24 @@ async function fetchSources(
   notes: string[],
 ): Promise<{ ok: true; headSha: string; mergeBase: string } | { ok: false; problem: string }> {
   // refs/pull/<n>/head lives on the base repo, so fork PRs need no access to the fork.
-  const refspecs = `${shq(`+refs/heads/${target.baseRef}:refs/remotes/origin/base`)} ${shq(`+refs/pull/${target.number}/head:refs/remotes/origin/pr`)}`;
+  const prSpec = shq(`+refs/pull/${target.number}/head:refs/remotes/origin/pr`);
+  // An open PR is diffed against today's base tip. Once a PR is merged, that tip contains its head (with a merge commit the
+  // merge base is the head itself, so the diff is empty), so a merged or closed PR is diffed against the base commit GitHub recorded.
+  const open = target.state === "open";
+  const baseSpec = open ? shq(`+refs/heads/${target.baseRef}:refs/remotes/origin/base`) : shq(target.baseSha);
+  const baseRev = open ? "origin/base" : shq(target.baseSha);
   const fetched = await base.run(
-    `git init -q . && git remote add origin ${shq(target.cloneUrl)} && git fetch -q --no-tags --depth=200 origin ${refspecs}`,
+    `git init -q . && git remote add origin ${shq(target.cloneUrl)} && git fetch -q --no-tags --depth=200 origin ${open ? `${baseSpec} ${prSpec}` : prSpec}`,
     { timeoutMs: SANDBOX_LIMITS.installTimeoutMs },
   );
   if (fetched.exitCode !== 0) return { ok: false, problem: `Could not fetch the pull request from ${target.cloneUrl}: ${lastLine(fetched.output)}` };
+  if (!open) {
+    // Fetched on its own so that a base commit GitHub no longer serves is named as the problem.
+    const baseFetched = await base.run(`git fetch -q --no-tags --depth=200 origin ${baseSpec}`, { timeoutMs: SANDBOX_LIMITS.installTimeoutMs });
+    if (baseFetched.exitCode !== 0) {
+      return { ok: false, problem: `Could not fetch the PR's base commit ${target.baseSha.slice(0, 12)}: ${lastLine(baseFetched.output)}` };
+    }
+  }
 
   const checkout = await base.run(`git checkout -q --detach ${shq(target.headSha)} 2>/dev/null || git checkout -q --detach origin/pr`);
   if (checkout.exitCode !== 0) return { ok: false, problem: `Could not check out the PR head: ${lastLine(checkout.output)}` };
@@ -185,15 +207,22 @@ async function fetchSources(
     notes.push(`The PR head moved after its metadata was fetched; reviewing ${headSha.slice(0, 12)} instead of ${target.headSha.slice(0, 12)}.`);
   }
 
-  let mergeBase = await base.run("git merge-base origin/base HEAD");
+  let mergeBase = await base.run(`git merge-base ${baseRev} HEAD`);
   if (mergeBase.exitCode !== 0) {
-    await base.run(`git fetch -q --no-tags --deepen=${DEEPEN_COMMITS} origin ${refspecs}`, { timeoutMs: SANDBOX_LIMITS.installTimeoutMs });
-    mergeBase = await base.run("git merge-base origin/base HEAD");
+    await base.run(`git fetch -q --no-tags --deepen=${DEEPEN_COMMITS} origin ${baseSpec} ${prSpec}`, { timeoutMs: SANDBOX_LIMITS.installTimeoutMs });
+    mergeBase = await base.run(`git merge-base ${baseRev} HEAD`);
   }
   if (mergeBase.exitCode !== 0) {
     return { ok: false, problem: `Could not compute a merge base between the PR and ${target.baseRef} within ${DEEPEN_COMMITS + 200} commits of history.` };
   }
-  return { ok: true, headSha, mergeBase: mergeBase.output.trim() };
+  const resolved = mergeBase.output.trim();
+  if (resolved === headSha) {
+    return {
+      ok: false,
+      problem: `The merge base is the PR head ${headSha.slice(0, 12)}: the base already contains every commit of the PR, so there is no diff to review.`,
+    };
+  }
+  return { ok: true, headSha, mergeBase: resolved };
 }
 
 async function runChecks(base: SandboxRunner, checks: Check[]): Promise<CheckResult[]> {

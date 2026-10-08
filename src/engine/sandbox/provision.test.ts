@@ -64,6 +64,12 @@ describe("provision", () => {
     expect(result.execution).toBe("static-only");
     expect(result.baseline).toEqual([]);
     expect(result.snapshotId).toBe("snap_fake");
+    // The scripts-on retry ran dependency install scripts with the network open, so the record must say so (rule 6).
+    expect(result.installs).toMatchObject([{ label: "npm ci", scriptsEnabled: true, result: { exitCode: 1 } }]);
+    expect(result.installScriptsNeeded).toBe(true);
+    expect(result.notes).toContain(
+      "npm ci failed with dependency install scripts disabled and enabled (exit 1); node checks were skipped and reviewers work without those dependencies.",
+    );
   });
 
   it("re-runs failing checks with install scripts enabled and records that they were needed", async () => {
@@ -99,6 +105,84 @@ describe("provision", () => {
     expect(base.commands().some((c) => c.includes("--deepen=2000"))).toBe(true);
     expect(base.commands().some((c) => c.startsWith("npm ci"))).toBe(false);
     expect(base.stopped).toBe(true);
+  });
+
+  it("diffs an open PR against the tip of its base branch", async () => {
+    const factory = fakeFactory();
+    await provision(fixtureTarget({ state: "open" }), factory);
+    const commands = baseOf(factory).commands();
+    expect(commands.find((c) => c.startsWith("git init"))).toContain("'+refs/heads/main:refs/remotes/origin/base'");
+    expect(commands).toContain("git merge-base origin/base HEAD");
+    expect(commands.some((c) => c.includes("'basesha'"))).toBe(false);
+  });
+
+  it.each(["merged", "closed"] as const)("diffs a %s PR against the base commit GitHub recorded, not today's base tip", async (state) => {
+    // With a merge commit, today's base tip contains the PR head, so its merge base is the head and the diff is empty.
+    const factory = fakeFactory(
+      fakeRepoHandler({
+        "git merge-base origin/base HEAD": { output: "headsha\n" },
+        "git merge-base 'basesha' HEAD": { output: "forkpoint\n" },
+      }),
+    );
+    const result = await provision(fixtureTarget({ state }), factory);
+    const base = baseOf(factory);
+    expect(result.unresolved).toEqual([]);
+    expect(result.mergeBase).toBe("forkpoint");
+    expect(base.commands()).toContain("git diff --no-color --no-ext-diff 'forkpoint' HEAD");
+    const baseFetch = base.log.find((e) => e.cmd.startsWith("git fetch") && e.cmd.includes("'basesha'"));
+    expect(baseFetch?.cmd).toBe("git fetch -q --no-tags --depth=200 origin 'basesha'");
+    expect(baseFetch?.network).toEqual(INSTALL_NETWORK);
+    expect(base.commands()).not.toContain("git merge-base origin/base HEAD");
+    // The base sha is fetched before anything from the repo runs.
+    expect(base.commands().indexOf(baseFetch?.cmd ?? "")).toBeLessThan(base.commands().findIndex((c) => c.startsWith("npm ci")));
+  });
+
+  it("deepens both the PR head and the recorded base commit when a merged PR has no merge base yet", async () => {
+    let deepened = false;
+    const repo = fakeRepoHandler();
+    const handler: FakeHandler = (cmd, opts) => {
+      if (cmd.includes("--deepen=")) {
+        deepened = true;
+        return {};
+      }
+      if (cmd.startsWith("git merge-base")) return deepened ? { output: "forkpoint\n" } : { exitCode: 1, output: "fatal: no merge base" };
+      return repo(cmd, opts);
+    };
+    const factory = fakeFactory(handler);
+    const result = await provision(fixtureTarget({ state: "merged" }), factory);
+    expect(result.mergeBase).toBe("forkpoint");
+    expect(baseOf(factory).commands()).toContain("git fetch -q --no-tags --deepen=2000 origin 'basesha' '+refs/pull/7/head:refs/remotes/origin/pr'");
+  });
+
+  it("stops as unresolved when the recorded base commit of a merged PR cannot be fetched", async () => {
+    const factory = fakeFactory(fakeRepoHandler({ "origin 'basesha'": { exitCode: 128, output: "fatal: remote error: upload-pack: not our ref basesha" } }));
+    const result = await provision(fixtureTarget({ state: "merged" }), factory);
+    expect(result.unresolved).toEqual(["Could not fetch the PR's base commit basesha: fatal: remote error: upload-pack: not our ref basesha"]);
+    expect(result.snapshotId).toBeNull();
+    expect(baseOf(factory).commands().some((c) => c.startsWith("npm ci"))).toBe(false);
+    expect(baseOf(factory).stopped).toBe(true);
+  });
+
+  it("stops as unresolved instead of reviewing nothing when the merge base is the PR head", async () => {
+    const factory = fakeFactory(fakeRepoHandler({ "git merge-base": { output: "headsha\n" } }));
+    const result = await provision(fixtureTarget(), factory);
+    expect(result.unresolved).toHaveLength(1);
+    expect(result.unresolved[0]).toMatch(/merge base is the PR head headsha/);
+    expect(result.snapshotId).toBeNull();
+    expect(result.diff).toBe("");
+    expect(baseOf(factory).commands().some((c) => c.startsWith("git diff") || c.startsWith("npm ci"))).toBe(false);
+    expect(baseOf(factory).stopped).toBe(true);
+  });
+
+  it("stops as unresolved when the diff is empty although GitHub lists changed files", async () => {
+    const factory = fakeFactory(fakeRepoHandler({ "git diff": { output: "\n" } }));
+    const result = await provision(fixtureTarget(), factory);
+    expect(result.unresolved).toEqual([
+      "The diff from merge base mergebase to the PR head is empty, but GitHub lists 1 changed file; a review of it would see nothing.",
+    ]);
+    expect(result.snapshotId).toBeNull();
+    expect(baseOf(factory).commands().some((c) => c.startsWith("npm ci"))).toBe(false);
+    expect(baseOf(factory).stopped).toBe(true);
   });
 
   it("notes when the PR head moved and reviews the commit it actually checked out", async () => {
