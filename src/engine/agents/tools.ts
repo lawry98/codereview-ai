@@ -45,6 +45,15 @@ export function makeSeatTools(opts: {
   headSha: string;
   commandTimeoutMs?: number;
 }) {
+  // AI SDK runs one step's tool calls concurrently, all against this seat's sandbox. A command's tree check and reset must
+  // not interleave with another command (a change would be pinned on the wrong one), so commands run one at a time.
+  let queue: Promise<unknown> = Promise.resolve();
+  const oneAtATime = <T>(task: () => Promise<T>): Promise<T> => {
+    const next = queue.then(task);
+    queue = next.catch(() => undefined);
+    return next;
+  };
+
   return {
     run_command: tool({
       description:
@@ -53,7 +62,7 @@ export function makeSeatTools(opts: {
         cmd: z.string().describe("The bash command to run"),
         cwd: z.string().optional().describe("Directory relative to the repo root"),
       }),
-      execute: async ({ cmd, cwd }) => {
+      execute: ({ cmd, cwd }) => oneAtATime(async () => {
         const result = await opts.runner.run(cmd, { cwd, timeoutMs: opts.commandTimeoutMs ?? SANDBOX_LIMITS.commandTimeoutMs });
         const evidenceId = opts.evidence.recordCommand(opts.seat, result);
 
@@ -76,7 +85,7 @@ export function makeSeatTools(opts: {
           output: wrapUntrusted("command-output", result.output),
           ...(note !== undefined ? { note } : {}),
         };
-      },
+      }),
     }),
     read_file: tool({
       description: "Read a file at the PR head with line numbers, up to 400 lines per call. Returns an evidenceId to cite in findings.",

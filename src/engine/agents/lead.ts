@@ -2,7 +2,7 @@ import { generateText, Output, type LanguageModel } from "ai";
 import type { Team } from "../compose";
 import { briefSystemPrompt, briefUserPrompt, mergeSystemPrompt, mergeUserPrompt, type ReviewContext } from "./prompts";
 import { BriefSchema, MergedSchema, type Brief, type Merged } from "./schemas";
-import type { SeatRun } from "./seat";
+import { MODEL_CALL_LIMITS, type SeatRun } from "./seat";
 import { usageFrom, type Usage } from "./usage";
 
 export async function writeBrief(input: {
@@ -16,6 +16,7 @@ export async function writeBrief(input: {
     system: briefSystemPrompt(),
     prompt: briefUserPrompt(input.ctx, input.doctrine, input.team),
     output: Output.object({ schema: BriefSchema }),
+    ...MODEL_CALL_LIMITS.brief,
   });
   return { brief: result.output, usage: usageFrom(result.totalUsage, result.steps.map((s) => s.providerMetadata)) };
 }
@@ -33,6 +34,7 @@ export async function mergeSeatReports(input: {
     system: mergeSystemPrompt(),
     prompt: mergeUserPrompt(input.ctx, input.brief, reports, input.caveats),
     output: Output.object({ schema: MergedSchema }),
+    ...MODEL_CALL_LIMITS.merge,
   });
   return { merged: result.output, usage: usageFrom(result.totalUsage, result.steps.map((s) => s.providerMetadata)) };
 }

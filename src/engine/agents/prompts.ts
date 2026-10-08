@@ -38,6 +38,12 @@ function baselineSection(ctx: ReviewContext): string {
   return ["## Baseline checks already run at the PR head", ...rows, "Skip anything these already report; that feedback is free."].join("\n");
 }
 
+/** Setup notes embed git-status file names, doctrine paths and requirements file names from the repo, so they are wrapped. */
+function sandboxNotesSection(ctx: ReviewContext): string {
+  const notes = ctx.provisionNotes.length > 0 ? wrapUntrusted("sandbox-notes", ctx.provisionNotes.map((n) => `- ${n}`).join("\n")) : "- none";
+  return `## Sandbox setup notes\n${notes}`;
+}
+
 function prDescription(ctx: ReviewContext): string {
   return `## PR description\n${wrapUntrusted("pr-description", `${ctx.target.title}\n\n${ctx.target.body}`)}`;
 }
@@ -62,9 +68,7 @@ ${UNTRUSTED_RULES}`;
 export function briefUserPrompt(ctx: ReviewContext, doctrine: Array<{ path: string; content: string }>, team: Team): string {
   const seated = team.seated.map(({ seat, why }) => `- ${seat.id} (${seat.standing ? "standing" : `conditional: ${why}`}): ${seat.name}`);
   const docs = doctrine.length > 0 ? doctrine.map((d) => wrapUntrusted(`doc:${d.path}`, d.content)).join("\n\n") : "No doctrine files (CLAUDE.md, AGENTS.md, CONTRIBUTING, ADRs, CONTEXT.md) were found.";
-  // Setup notes embed git-status file names, doctrine paths and requirements file names from the repo, so they are wrapped.
-  const notes = ctx.provisionNotes.length > 0 ? wrapUntrusted("sandbox-notes", ctx.provisionNotes.map((n) => `- ${n}`).join("\n")) : "- none";
-  return [targetHeader(ctx), `## Team\n${seated.join("\n")}`, baselineSection(ctx), `## Sandbox setup notes\n${notes}`, prDescription(ctx), `## Repo docs\n${docs}`, diffSection(ctx)].join("\n\n");
+  return [targetHeader(ctx), `## Team\n${seated.join("\n")}`, baselineSection(ctx), sandboxNotesSection(ctx), prDescription(ctx), `## Repo docs\n${docs}`, diffSection(ctx)].join("\n\n");
 }
 
 export function seatSystemPrompt(seat: SeatDefinition, ctx: ReviewContext): string {
@@ -117,6 +121,7 @@ export function seatUserPrompt(ctx: ReviewContext, brief: Brief, questions: stri
     targetHeader(ctx),
     `## Lead's brief\nThe lead read the diff and the repo docs for you. Its start-here items are questions, not assertions: the answer may be "this is fine". They are a starting set, not your scope, and finding nothing at them is a useful answer.\n${wrapUntrusted("lead-brief", lead)}`,
     baselineSection(ctx),
+    sandboxNotesSection(ctx),
     prDescription(ctx),
     diffSection(ctx),
   ].join("\n\n");

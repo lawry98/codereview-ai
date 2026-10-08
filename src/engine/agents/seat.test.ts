@@ -3,9 +3,10 @@ import { describe, expect, it } from "vitest";
 import { EvidenceLog } from "../evidence";
 import { seatById } from "../roster";
 import { FakeRunner } from "../sandbox/fake";
+import { SANDBOX_LIMITS } from "../sandbox/policy";
 import { fixtureBrief, fixtureContext, fixtureSeatReport } from "../test-fixtures";
 import { mockModel, textStep, toolStep } from "./mock-model";
-import { runSeat } from "./seat";
+import { MODEL_CALL_LIMITS, runSeat } from "./seat";
 import { makeSeatTools } from "./tools";
 
 const correctness = seatById("correctness");
@@ -47,6 +48,29 @@ describe("runSeat", () => {
     expect(evidence.get("correctness-1")).toMatchObject({ kind: "command", cmd: PROBE, output: "-2\n" });
     expect(run.usage).toEqual({ inputTokens: 200, outputTokens: 40, costUsd: expect.closeTo(0.02) });
     expect(JSON.stringify(model.doGenerateCalls[0].prompt)).toContain("Does Math.round treat negative prices the way callers expect?");
+  });
+
+  it("caps output tokens and bounds the whole run with a timeout on every model call", async () => {
+    const model = mockModel([toolStep("run_command", { cmd: PROBE }), textStep(JSON.stringify(fixtureSeatReport()))]);
+    const run = await runSeat({
+      model,
+      seat: correctness,
+      why: "standing",
+      ctx: fixtureContext(),
+      brief: fixtureBrief(),
+      tools: makeSeatTools({ seat: "correctness", runner: sandbox(), evidence: new EvidenceLog(), headSha: HEAD }),
+    });
+    expect(run.error).toBeUndefined();
+    expect(model.doGenerateCalls).toHaveLength(2);
+    for (const call of model.doGenerateCalls) {
+      expect(call.maxOutputTokens).toBe(16_000);
+      // The SDK turns `timeout` into an abort signal on each call; without one, a hung call has no bound.
+      expect(call.abortSignal).toBeInstanceOf(AbortSignal);
+      expect(call.abortSignal?.aborted).toBe(false);
+    }
+    expect(MODEL_CALL_LIMITS.seat.maxOutputTokens).toBe(16_000);
+    // The seat sandbox times out at 30 minutes; the seat must give up first.
+    expect(MODEL_CALL_LIMITS.seat.timeout.totalMs).toBeLessThan(SANDBOX_LIMITS.sandboxTimeoutMs);
   });
 
   it("lets the model call tools until the last allowed step, then forces the report", async () => {

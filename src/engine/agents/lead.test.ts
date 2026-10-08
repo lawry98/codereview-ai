@@ -19,6 +19,13 @@ describe("writeBrief", () => {
     expect(result.brief).toEqual(fixtureBrief());
     expect(result.usage.costUsd).toBeCloseTo(0.03);
   });
+
+  it("caps output tokens and sets a timeout on the call", async () => {
+    const model = mockModel([textStep(JSON.stringify(fixtureBrief()))]);
+    await writeBrief({ model, ctx: fixtureContext(), doctrine: [], team: composeTeam({ signals: [], changedLines: 120 }) });
+    expect(model.doGenerateCalls[0].maxOutputTokens).toBe(16_000);
+    expect(model.doGenerateCalls[0].abortSignal).toBeInstanceOf(AbortSignal);
+  });
 });
 
 describe("mergeSeatReports", () => {
@@ -32,8 +39,12 @@ describe("mergeSeatReports", () => {
       doctrineNotes: [],
       notChecked: [],
     };
-    const result = await mergeSeatReports({ model: mockModel([textStep(JSON.stringify(merged))]), ctx: fixtureContext(), brief: fixtureBrief(), runs: [run], caveats: [] });
+    const model = mockModel([textStep(JSON.stringify(merged))]);
+    const result = await mergeSeatReports({ model, ctx: fixtureContext(), brief: fixtureBrief(), runs: [run], caveats: [] });
     expect(result.merged).toEqual(merged);
+    // A seven-seat merge is the longest output in a review.
+    expect(model.doGenerateCalls[0].maxOutputTokens).toBe(32_000);
+    expect(model.doGenerateCalls[0].abortSignal).toBeInstanceOf(AbortSignal);
   });
 });
 
