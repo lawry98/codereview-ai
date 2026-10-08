@@ -146,6 +146,57 @@ describe("reviewPr", () => {
     expect(factory.seats.every((s) => s.commands().every((cmd) => !cmd.startsWith("git reset")))).toBe(true);
   });
 
+  it("reports a snapshot that could not be deleted in the provision notes instead of swallowing it", async () => {
+    const factory = fakeFactory(repoAt(HEX), seatRunner());
+    const attempts: string[] = [];
+    factory.deleteSnapshot = async (snapshotId) => {
+      attempts.push(snapshotId);
+      throw new Error("auth expired");
+    };
+    const outcome = await reviewPr(URL, {
+      github: github(),
+      sandboxes: factory,
+      models: { lead: mockModel([textStep(JSON.stringify(fixtureBrief())), textStep(JSON.stringify(merged))]), seat: seatModel(), ids },
+    });
+    expect(outcome.kind).toBe("reviewed");
+    if (outcome.kind !== "reviewed") return;
+    expect(outcome.report.provisionNotes).toContain("Snapshot snap_fake could not be deleted: auth expired");
+    expect(attempts).toEqual(["snap_fake"]);
+  });
+
+  it("rethrows the original error unchanged when the snapshot is deleted", async () => {
+    const factory = fakeFactory(repoAt(HEX), seatRunner());
+    const lead = new MockLanguageModelV4({
+      doGenerate: async () => {
+        throw new Error("lead exploded");
+      },
+    });
+    const error = await reviewPr(URL, { github: github(), sandboxes: factory, models: { lead, seat: seatModel(), ids } }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error instanceof Error && error.message).toBe("lead exploded");
+    expect(factory.deleted).toEqual(["snap_fake"]);
+  });
+
+  it("names both failures, keeping the original as the cause, when the snapshot cannot be deleted after an error", async () => {
+    const factory = fakeFactory(repoAt(HEX), seatRunner());
+    const attempts: string[] = [];
+    factory.deleteSnapshot = async (snapshotId) => {
+      attempts.push(snapshotId);
+      throw new Error("auth expired");
+    };
+    const original = new Error("lead exploded");
+    const lead = new MockLanguageModelV4({
+      doGenerate: async () => {
+        throw original;
+      },
+    });
+    const error = await reviewPr(URL, { github: github(), sandboxes: factory, models: { lead, seat: seatModel(), ids } }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error instanceof Error && error.message).toBe("lead exploded (and snapshot snap_fake could not be deleted: auth expired)");
+    expect(error instanceof Error && error.cause).toBe(original);
+    expect(attempts).toEqual(["snap_fake"]);
+  });
+
   it("stops every seat sandbox and deletes the snapshot when a seat sandbox cannot be created", async () => {
     const factory = fakeFactory(repoAt(HEX), seatRunner());
     const create = factory.fromSnapshot.bind(factory);

@@ -26,6 +26,8 @@ export const SANDBOX_LIMITS = {
   checkTimeoutMs: 5 * 60_000,
   commandTimeoutMs: 3 * 60_000,
   defaultOutputBytes: 16_000,
+  /** The snapshot holds the PR's repo and its node_modules. It is deleted when the review ends; this expiry only matters if that delete fails. */
+  snapshotExpirationMs: 2 * 60 * 60_000,
 } as const;
 
 /** The only environment a sandbox receives (security rule 1: no secrets). */

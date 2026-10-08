@@ -18,7 +18,7 @@ type SandboxLike = {
   ): Promise<{ exitCode: number; output(stream: "both"): Promise<string> }>;
   readFileToBuffer(file: { path: string }): Promise<Buffer | null>;
   updateNetworkPolicy(policy: NetworkPolicy): Promise<unknown>;
-  snapshot(): Promise<{ snapshotId: string }>;
+  snapshot(opts?: { expiration?: number }): Promise<{ snapshotId: string }>;
   stop(): Promise<unknown>;
 };
 
@@ -51,7 +51,7 @@ export class VercelRunner implements SandboxRunner {
   }
 
   async snapshot(): Promise<string> {
-    const snapshot = await this.sandbox.snapshot();
+    const snapshot = await this.sandbox.snapshot({ expiration: SANDBOX_LIMITS.snapshotExpirationMs });
     return snapshot.snapshotId;
   }
 

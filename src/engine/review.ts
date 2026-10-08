@@ -58,13 +58,18 @@ export async function reviewPr(url: string, deps: ReviewDeps): Promise<ReviewOut
   progress({ type: "stage", stage: "provision" });
   const env = await provision(target, deps.sandboxes);
   if (env.unresolved.length > 0 || env.snapshotId === null || env.mergeBase === null) {
+    const problems = env.unresolved.length > 0 ? [...env.unresolved] : ["Sandbox setup did not produce a snapshot."];
     // Provision only snapshots a resolved PR; if a snapshot exists anyway, it must not outlive this call.
-    if (env.snapshotId !== null) await deps.sandboxes.deleteSnapshot(env.snapshotId).catch(() => undefined);
-    return { kind: "unresolved", problems: env.unresolved.length > 0 ? env.unresolved : ["Sandbox setup did not produce a snapshot."], target };
+    if (env.snapshotId !== null) {
+      const failure = await deleteSnapshot(deps.sandboxes, env.snapshotId);
+      if (failure !== undefined) problems.push(snapshotNote(env.snapshotId, failure));
+    }
+    return { kind: "unresolved", problems, target };
   }
   const snapshotId = env.snapshotId;
   const mergeBase = env.mergeBase;
 
+  let snapshotDeleted = false;
   try {
     // env.headSha is the commit the sandbox actually checked out; target.headSha is only what GitHub said a moment earlier.
     const ctx: ReviewContext = { target, headSha: env.headSha, mergeBase, diff: env.diff, baseline: env.baseline, execution: env.execution, provisionNotes: env.notes };
@@ -107,7 +112,7 @@ export async function reviewPr(url: string, deps: ReviewDeps): Promise<ReviewOut
       usage = addUsage(usage, result.usage);
       merged = { ...result.merged, caveats: [...new Set([...caveats, ...result.merged.caveats])] };
     } catch (error) {
-      merged = fallbackMerge(runs, caveats, error instanceof Error ? error.message : String(error));
+      merged = fallbackMerge(runs, caveats, errorMessage(error));
       usage = { ...usage, costUsd: null };
     }
 
@@ -115,6 +120,10 @@ export async function reviewPr(url: string, deps: ReviewDeps): Promise<ReviewOut
     const removed = new Set(target.files.filter((f) => f.status === "removed").map((f) => f.path));
     const checked = enforceInvariants(merged, { evidence, fileExists: (p) => headFiles.has(p) || removed.has(p) });
     const cited = new Set(checked.merged.findings.flatMap((f) => f.evidenceIds));
+
+    // The seats are done with the snapshot. A failed delete is reported in the review: it leaves a copy of the PR's repo behind.
+    const deleteFailure = await deleteSnapshot(deps.sandboxes, snapshotId);
+    snapshotDeleted = true;
 
     progress({ type: "stage", stage: "report" });
     const report: ReviewReport = {
@@ -148,12 +157,29 @@ export async function reviewPr(url: string, deps: ReviewDeps): Promise<ReviewOut
       merged: checked.merged,
       evidence: evidence.all().filter((e) => cited.has(e.id)),
       invariantNotes: checked.notes,
-      provisionNotes: env.notes,
+      provisionNotes: deleteFailure === undefined ? env.notes : [...env.notes, snapshotNote(snapshotId, deleteFailure)],
       stamp: { startedAt: startedAt.toISOString(), durationMs: now().getTime() - startedAt.getTime(), models: deps.models.ids, usage },
     };
     return { kind: "reviewed", report };
-  } finally {
-    await deps.sandboxes.deleteSnapshot(snapshotId).catch(() => undefined);
+  } catch (error) {
+    if (snapshotDeleted) throw error;
+    const failure = await deleteSnapshot(deps.sandboxes, snapshotId);
+    if (failure === undefined) throw error;
+    throw new Error(`${errorMessage(error)} (and snapshot ${snapshotId} could not be deleted: ${failure})`, { cause: error });
+  }
+}
+
+const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const snapshotNote = (snapshotId: string, failure: string) => `Snapshot ${snapshotId} could not be deleted: ${failure}`;
+
+/** Resolves to why the delete failed, or undefined once it is gone. A snapshot that outlives its review is a leak, so the caller must surface a failure. */
+async function deleteSnapshot(sandboxes: SandboxFactory, snapshotId: string): Promise<string | undefined> {
+  try {
+    await sandboxes.deleteSnapshot(snapshotId);
+    return undefined;
+  } catch (error) {
+    return errorMessage(error);
   }
 }
 

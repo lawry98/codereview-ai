@@ -49,8 +49,10 @@ describe("VercelRunner", () => {
     expect(await runner.readFile("nope.ts")).toBeNull();
   });
 
-  it("returns the snapshot id", async () => {
-    expect(await new VercelRunner(stub()).snapshot()).toBe("snap_1");
+  it("returns the snapshot id, asking for it to expire in two hours as a backstop for a failed delete", async () => {
+    const s = stub();
+    expect(await new VercelRunner(s).snapshot()).toBe("snap_1");
+    expect(s.snapshot).toHaveBeenCalledWith({ expiration: 2 * 60 * 60 * 1000 });
   });
 });
 
