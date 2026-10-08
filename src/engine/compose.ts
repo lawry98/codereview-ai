@@ -11,10 +11,13 @@ export const SOLO_THRESHOLD_LINES = 30;
 export function composeTeam(input: { signals: Signal[]; changedLines: number }): Team {
   const team: Team = { seated: [], declined: [] };
 
-  if (input.changedLines < SOLO_THRESHOLD_LINES) {
+  // Solo only for a small PR that changes no code. Any source or test change fires a signal other than
+  // "documentation", so "every signal is documentation" is the mechanical proxy for the doctrine's "no logic change".
+  const changesNoCode = input.signals.every((s) => s === "documentation");
+  if (input.changedLines < SOLO_THRESHOLD_LINES && changesNoCode) {
     for (const seat of ROSTER) {
-      if (seat.id === "correctness") team.seated.push({ seat, why: `standing; the PR is under ${SOLO_THRESHOLD_LINES} changed lines, so one seat reviews it` });
-      else team.declined.push({ seat: seat.id, reason: `the PR is under ${SOLO_THRESHOLD_LINES} changed lines; a full team would produce filler` });
+      if (seat.id === "correctness") team.seated.push({ seat, why: `standing; the PR is under ${SOLO_THRESHOLD_LINES} changed lines and changes no code, so one seat reviews it` });
+      else team.declined.push({ seat: seat.id, reason: `the PR is under ${SOLO_THRESHOLD_LINES} changed lines and changes no code; a full team would produce filler` });
     }
     return team;
   }

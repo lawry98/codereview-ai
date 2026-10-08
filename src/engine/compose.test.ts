@@ -4,11 +4,22 @@ import { applyLeadDeclines, composeTeam } from "./compose";
 const ids = (team: ReturnType<typeof composeTeam>) => team.seated.map((s) => s.seat.id);
 
 describe("composeTeam", () => {
-  it("seats only correctness for a tiny PR", () => {
+  it("seats the standing team plus security for a 12-line PR that changes logic", () => {
     const team = composeTeam({ signals: ["security-surface"], changedLines: 12 });
+    expect(ids(team)).toEqual(["correctness", "design", "craft", "spec", "security"]);
+  });
+
+  it("seats only correctness for a tiny PR that changes no code", () => {
+    const team = composeTeam({ signals: ["documentation"], changedLines: 10 });
     expect(ids(team)).toEqual(["correctness"]);
     expect(team.declined).toHaveLength(12);
-    expect(team.declined[0].reason).toMatch(/under 30 changed lines/);
+    expect(team.declined[0].reason).toMatch(/under 30 changed lines and changes no code/);
+    expect(ids(composeTeam({ signals: [], changedLines: 10 }))).toEqual(["correctness"]);
+  });
+
+  it("seats the standing team plus tests for a 29-line PR that changes logic", () => {
+    const team = composeTeam({ signals: ["untested-behaviour-change"], changedLines: 29 });
+    expect(ids(team)).toEqual(["correctness", "design", "craft", "spec", "tests"]);
   });
 
   it("seats the four standing seats when no signal fires", () => {
