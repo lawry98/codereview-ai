@@ -141,10 +141,12 @@ ${UNTRUSTED_RULES}`;
 export function mergeUserPrompt(ctx: ReviewContext, brief: Brief, reports: SeatReportForMerge[], caveats: string[]): string {
   // Caveats can embed a seat's error text, so they are wrapped.
   const caveatList = caveats.length > 0 ? wrapUntrusted("caveats", caveats.map((c) => `- ${c}`).join("\n")) : "- none";
+  // The doctrine extract is what lets the lead judge which findings contradict a documented repo decision (doctrineNotes).
+  const leadBrief = [`Intent: ${brief.intent}`, `Doctrine that binds this diff: ${brief.doctrine || "none found"}`, `Does not bind: ${brief.doesNotBind || "n/a"}`].join("\n\n");
   const payload = JSON.stringify(reports.map((r) => ({ seat: r.seat, name: r.name, why: r.why, ...(r.error ? { error: r.error } : {}), ...r.report })), null, 2);
   return [
     targetHeader(ctx),
-    `## The lead's reading of the change\n${wrapUntrusted("lead-brief", brief.intent)}`,
+    `## The lead's brief\n${wrapUntrusted("lead-brief", leadBrief)}`,
     `## Caveats you must carry into the verdict\n${caveatList}`,
     `## Seat reports\n${wrapUntrusted("seat-reports", payload)}`,
   ].join("\n\n");
