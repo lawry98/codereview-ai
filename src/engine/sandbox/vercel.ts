@@ -5,7 +5,22 @@ import { shq, tailBytes } from "../util/text";
 import { LOCKED_NETWORK, REPO_DIR, SANDBOX_ENV, SANDBOX_LIMITS } from "./policy";
 import type { RunOptions, SandboxFactory, SandboxRunner } from "./runner";
 
-type SandboxLike = Pick<Sandbox, "runCommand" | "readFileToBuffer" | "updateNetworkPolicy" | "snapshot" | "stop">;
+/**
+ * The slice of `Sandbox` the runner calls. Structural (not `Pick<Sandbox, ...>`) so tests can stub it
+ * without casts: `Pick` drags in the `CommandFinished` / `Snapshot` classes and their private members.
+ * The real `Sandbox` is passed to `new VercelRunner(...)` below, so typecheck proves it is assignable.
+ */
+type SandboxLike = {
+  runCommand(
+    command: string,
+    args: string[],
+    opts: { timeoutMs: number },
+  ): Promise<{ exitCode: number; output(stream: "both"): Promise<string> }>;
+  readFileToBuffer(file: { path: string }): Promise<Buffer | null>;
+  updateNetworkPolicy(policy: NetworkPolicy): Promise<unknown>;
+  snapshot(): Promise<{ snapshotId: string }>;
+  stop(): Promise<unknown>;
+};
 
 export class VercelRunner implements SandboxRunner {
   constructor(private readonly sandbox: SandboxLike) {}
@@ -46,12 +61,12 @@ export class VercelRunner implements SandboxRunner {
 }
 
 /** Access-token auth for non-Vercel environments; otherwise the SDK uses VERCEL_OIDC_TOKEN from `vercel env pull`. */
-function credentials(env: NodeJS.ProcessEnv) {
+function credentials(env: Partial<NodeJS.ProcessEnv>) {
   const { VERCEL_TOKEN: token, VERCEL_TEAM_ID: teamId, VERCEL_PROJECT_ID: projectId } = env;
   return token && teamId && projectId ? { token, teamId, projectId } : {};
 }
 
-export function createVercelSandboxFactory(env: NodeJS.ProcessEnv = process.env): SandboxFactory {
+export function createVercelSandboxFactory(env: Partial<NodeJS.ProcessEnv> = process.env): SandboxFactory {
   const creds = credentials(env);
   const common = {
     resources: { vcpus: SANDBOX_LIMITS.vcpus },
