@@ -73,6 +73,10 @@ invariants (deterministic): strip unknown evidence ids · unverified → not blo
 ReviewReport (JSON) + markdown
 ```
 
+A PR under 30 changed lines whose signals are all `documentation` or `configuration`
+gets only the correctness seat (solo mode), per the doctrine's no-team rule for tiny
+no-logic diffs.
+
 Agents run on the host and call models through AI Gateway. The sandbox only executes
 commands. That separation is security rule 1.
 
